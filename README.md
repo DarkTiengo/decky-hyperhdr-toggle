@@ -19,6 +19,7 @@
 - [Configuração passo a passo](#configuração-passo-a-passo)
 - [Painel do plugin](#painel-do-plugin)
 - [Configuração avançada](#configuração-avançada)
+- [Luzes do PC (OpenRGB)](#luzes-do-pc-openrgb)
 - [Desempenho](#desempenho)
 - [Problemas conhecidos](#problemas-conhecidos)
 - [Solução de problemas](#solução-de-problemas)
@@ -60,6 +61,7 @@ O gamescope, porém, publica a imagem já composta da tela como um **nó PipeWir
 - **Freio da captura** (ligado por padrão): reduz a perda de FPS no jogo de ~5,3% para ~1,6%
 - **Desligamento suave**: pausa o stream antes de desconectar, para evitar um travamento do gamescope
 - Liga e desliga a saída de LEDs e o forwarder do HyperHDR sem parar o serviço
+- **Luzes do PC via OpenRGB:** RAM, placa-mãe e ventoinhas RGB seguem a mesma imagem, sincronizadas com a TV
 - Opção "Iniciar com o sistema"
 - Quatro perfis de qualidade, de 160x90 a 640x360 e de 25 a 60 fps
 
@@ -172,6 +174,7 @@ Depois, na Web UI do HyperHDR, ative **Video capture** em `GamescopeCapture (vid
 | Controle | **HyperHDR** | Liga e desliga a captura e o HyperHDR local |
 | | **Saída de LEDs** | Liga e desliga o componente `LEDDEVICE` do HyperHDR sem parar o serviço |
 | | **Encaminhar (forwarder)** | Só aparece se você usa o forwarder. Pausa o envio para outro HyperHDR. |
+| | **LEDs do PC (OpenRGB)** | Faz as luzes RGB do PC seguirem a cor da tela (veja [Luzes do PC](#luzes-do-pc-openrgb)). Liga e desliga sem mexer na captura. |
 | | **Iniciar com o sistema** | Habilita os serviços no login. A captura começa sozinha quando o Game Mode abre. |
 | Status | **HyperHDR** | Estado do serviço e o modo detectado (nativo, distrobox, externo, não encontrado) |
 | | **Captura** | Estado da ponte. "Rodando" no Desktop significa que ela está esperando o gamescope. |
@@ -202,6 +205,10 @@ O plugin guarda tudo em `~/.config/hyperhdr-decky.env`. Você pode editar o arqu
 | `BRIDGE_WIDTH` / `BRIDGE_HEIGHT` / `BRIDGE_FPS` | `320` / `180` / `30` | Tamanho e taxa da captura |
 | `BRIDGE_THROTTLE` | `1` | `0` desliga o freio |
 | `BRIDGE_IMPL` | `auto` | `gst-launch` força a ponte antiga, sem freio e sem desligamento suave |
+| `OPENRGB_ENABLE` | `0` | `1` liga as luzes do PC |
+| `OPENRGB_HOST` / `OPENRGB_PORT` | `127.0.0.1` / `6742` | Servidor SDK do OpenRGB |
+| `OPENRGB_UDP_PORT` | `19446` | Porta onde o HyperHDR (saída `udpraw`) entrega as cores |
+| `OPENRGB_CMD` | — | Comando do OpenRGB, se não for o Flatpak nem o `openrgb` no PATH |
 
 Ordem da detecção automática: `HYPERHDR_BIN` → HyperHDR portátil → `hyperhdr` no PATH → distrobox.
 
@@ -215,6 +222,60 @@ journalctl --user -u decky-hyperhdr-bridge -u decky-hyperhdr -f
 # logs do plugin (Decky)
 ls ~/homebrew/logs/hyperhdr-toggle/
 ```
+
+## Luzes do PC (OpenRGB)
+
+Além da TV, as luzes RGB do próprio PC (memórias, placa-mãe, ventoinhas, fitas) podem seguir a imagem. Elas usam o mesmo HyperHDR e a mesma captura, então ficam sincronizadas com a TV, no Game Mode e no Desktop.
+
+```
+captura ─▶ HyperHDR ┬ instância 0 → TV (sem mudanças)
+                    └ instância "PC RGB" (1 LED = tela inteira) ─udpraw─▶ ponte ─SDK─▶ OpenRGB ─▶ RAM, placa, fans
+```
+
+- A imagem do Flatbuffers chega a **todas** as instâncias do HyperHDR. Por isso a instância nova recebe a mesma captura sem nada extra.
+- A ponte (`decky-hyperhdr-openrgb.service`) recebe a cor pela saída `udpraw` do HyperHDR e aplica nos dispositivos pelo protocolo SDK do OpenRGB. O cliente do SDK é implementação própria, sem dependências.
+- O plugin sobe o servidor do OpenRGB sem janela (`decky-openrgb-server.service`). Se a interface do OpenRGB já estiver rodando como servidor na mesma porta, ele usa essa.
+- **Ao desligar**, cada dispositivo volta a um efeito de hardware. O padrão é o primeiro disponível entre `Rainbow Wave`, `Rainbow`, `Spectrum Cycle` e `Color Shift`. O OpenRGB não consegue ler o efeito que estava ativo antes, então a escolha é configurável.
+
+### Requisitos
+
+- [OpenRGB](https://openrgb.org) 0.9 ou mais novo. O Flatpak `org.openrgb.OpenRGB` funciona.
+- As [regras udev do OpenRGB](https://openrgb.org/udev) instaladas. No Bazzite elas já vêm (`openrgb-udev-rules`).
+- Seus dispositivos aparecendo em `flatpak run --command=openrgb org.openrgb.OpenRGB --list-devices`.
+
+### Passo a passo
+
+1. **Crie uma segunda instância no HyperHDR.** Na Web UI (`:8090`): *Instances* (ou *Instance management*) → criar → nome **PC RGB** → iniciar.
+2. **Configure a saída da instância.** Selecione a instância **PC RGB** no topo da Web UI e vá em *LED Hardware*:
+   - **Controller type:** `udpraw`, **Target IP:** `127.0.0.1`, **Port:** `19446`
+   - **LED layout:** 1 LED cobrindo a tela inteira, ou seja, *Classic* com 1 LED, ou no modo avançado `hmin 0 / hmax 1 / vmin 0 / vmax 1`
+   - Para ficar no mesmo ritmo da TV, copie a suavização (*Smoothing*) e a correção de cor da instância principal.
+3. **No painel do plugin**, ligue **LEDs do PC (OpenRGB)** e a chave **HyperHDR**.
+
+Na primeira execução a ponte cria `~/.config/hyperhdr-decky-openrgb.json`, com uma entrada por dispositivo:
+
+```json
+{
+  "Corsair Vengeance RGB DDR5": { "led": 0, "enabled": true, "max_hz": 10, "restore_mode": "Rainbow Wave" },
+  "ASUS ROG STRIX B650E-I GAMING WIFI": { "led": 0, "enabled": true, "max_hz": 30, "restore_mode": "Rainbow" }
+}
+```
+
+| Campo | Para que serve |
+| --- | --- |
+| `led` | Qual LED da instância "PC RGB" o dispositivo segue. Com mais LEDs no layout do HyperHDR (ex.: esquerda/direita), dá para separar dispositivos por região da tela. |
+| `enabled` | `false` deixa o dispositivo de fora |
+| `max_hz` | Atualizações por segundo. Memórias em SMBus são lentas (padrão 10), USB aguenta mais (30). |
+| `restore_mode` | Efeito de hardware aplicado ao desligar. Use um nome da lista de modos do dispositivo, ou `""` para não mexer. |
+
+Dispositivos com o mesmo nome, como dois pentes de memória iguais, compartilham a entrada.
+
+### Desempenho e cuidados
+
+- **Custo:** medido no Bazzite com vídeo tocando, em % de um núcleo: ponte do OpenRGB ~0,1%, servidor do OpenRGB ~0,3%. A ponte só envia quando a cor muda.
+- **Plugin de efeitos do OpenRGB:** se ele estiver ativo ao mesmo tempo, os dois brigam pelos LEDs. Pause os efeitos enquanto sincroniza.
+- **Programas que mexem no SMBus** (como os do fabricante da memória) podem conflitar com o OpenRGB.
+- **Ordem de parada:** o plugin para a ponte antes do servidor, para dar tempo de restaurar o efeito. A ponte também espera 2 s depois de restaurar, porque as memórias aplicam os comandos devagar.
 
 ## Desempenho
 
@@ -282,6 +343,7 @@ Arquivos que ficam, para remover à mão se quiser:
 ```bash
 rm -f ~/.config/hyperhdr-decky.env
 rm -rf ~/.local/share/hyperhdr-portable          # se instalou o portátil
+rm -f ~/.config/hyperhdr-decky-openrgb.json      # se usou as luzes do PC
 sudo rm -f /etc/modprobe.d/99-hyperhdr-loopback.conf /etc/modules-load.d/99-hyperhdr-loopback.conf  # se usou o v4l2
 ```
 
@@ -298,6 +360,9 @@ A configuração do HyperHDR (`~/.hyperhdr`) não é tocada.
 │   ├── hyperhdr-gamescope-bridge.sh           # ponto de entrada da ponte (escolhe Python ou gst-launch)
 │   ├── hyperhdr-gamescope-bridge.py           # ponte GStreamer com freio e desligamento suave
 │   ├── hyperhdr-flatbuffers-sender.py         # cliente Flatbuffers do HyperHDR
+│   ├── hyperhdr-openrgb-bridge.py             # luzes do PC: udpraw do HyperHDR → OpenRGB
+│   ├── openrgb_sdk.py                         # cliente mínimo do OpenRGB SDK (protocolo 3)
+│   ├── openrgb-server.sh                      # sobe o servidor do OpenRGB sem janela
 │   └── setup-v4l2loopback.sh                  # opcional, root
 ├── py_modules/flatbuffers/                    # biblioteca FlatBuffers (Apache-2.0), embutida
 ├── package.sh                                 # gera out/hyperhdr-toggle.zip
@@ -319,7 +384,7 @@ Para testar no aparelho sem reinstalar: copie os arquivos para `~/homebrew/plugi
 
 ## Status e créditos
 
-- **Testado:** Bazzite 44 (KDE + Game Mode, gamescope 3.16.31-ogc1), HyperHDR 22 em distrobox, nos dois métodos de captura. O modo portátil foi testado fora do Decky (Arch e Bazzite).
+- **Testado:** Bazzite 44 (KDE + Game Mode, gamescope 3.16.31-ogc1), HyperHDR 22 em distrobox, nos dois métodos de captura. Luzes do PC com OpenRGB 1.0 (Flatpak): Corsair Vengeance RGB DDR5 e ASUS Aura USB (placa + ventoinhas ARGB). O modo portátil foi testado fora do Decky (Arch e Bazzite).
 - **Não testado:** SteamOS no Steam Deck, portáteis com Bazzite, GPUs NVIDIA, ChimeraOS e outras distros com gamescope.
 
 > ### 🙋 Procuram-se testadores
@@ -347,6 +412,7 @@ Para testar no aparelho sem reinstalar: copie os arquivos para `~/homebrew/plugi
 - Capture via **Flatbuffers** (default: TCP 19400, priority 150, no root or kernel module) or **v4l2loopback** (`/dev/video50`)
 - **Capture throttle** (default on): FPS loss ~1.6% instead of ~5.3%
 - **Graceful shutdown**: pauses the stream before disconnecting
+- **PC RGB lights via OpenRGB**: RAM, motherboard and fans follow the same picture, in sync with the TV. A second HyperHDR instance ("PC RGB", 1 LED = whole screen, `udpraw` output to `127.0.0.1:19446`) feeds a small bridge that drives OpenRGB over its SDK. When you turn it off, each device goes back to a hardware effect.
 - Toggles for the LED output and forwarder, autostart, and quality presets
 
 **Install**

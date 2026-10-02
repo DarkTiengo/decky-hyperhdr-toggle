@@ -17,6 +17,7 @@ type Status = {
   detail: string;
   hyperhdr: string;
   bridge: string;
+  openrgb: string;
   api: boolean;
   leds: boolean | null;
   forwarding: boolean | null;
@@ -190,6 +191,17 @@ function Content() {
             />
           </PanelSectionRow>
         )}
+        {settings && (
+          <PanelSectionRow>
+            <ToggleField
+              label="LEDs do PC (OpenRGB)"
+              description="RAM, placa-mãe e fans seguem a cor da tela"
+              checked={settings.OPENRGB_ENABLE === "1"}
+              disabled={busy}
+              onChange={(v) => onSetting("OPENRGB_ENABLE", v ? "1" : "0")}
+            />
+          </PanelSectionRow>
+        )}
         <PanelSectionRow>
           <ToggleField
             label="Iniciar com o sistema"
@@ -211,6 +223,13 @@ function Content() {
             {status ? label(status.bridge) : "…"}
           </Field>
         </PanelSectionRow>
+        {status && status.openrgb !== "disabled" && (
+          <PanelSectionRow>
+            <Field label="LEDs do PC" focusable>
+              {label(status.openrgb)}
+            </Field>
+          </PanelSectionRow>
+        )}
         {status?.v4l2_missing && (
           <PanelSectionRow>
             <Field label="Aviso" focusable>

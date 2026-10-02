@@ -14,6 +14,10 @@ import decky
 
 HYPERHDR_UNIT = "decky-hyperhdr.service"
 BRIDGE_UNIT = "decky-hyperhdr-bridge.service"
+OPENRGB_SERVER_UNIT = "decky-openrgb-server.service"
+OPENRGB_UNIT = "decky-hyperhdr-openrgb.service"
+OPENRGB_UNITS = [OPENRGB_SERVER_UNIT, OPENRGB_UNIT]
+ALL_UNITS = [HYPERHDR_UNIT, BRIDGE_UNIT, *OPENRGB_UNITS]
 # Units da primeira versão, instaladas à mão pelo install.sh
 LEGACY_UNITS = ["hyperhdr.service", "hyperhdr-gamescope-bridge.service"]
 
@@ -35,12 +39,19 @@ DEFAULTS = {
     "BRIDGE_HEIGHT": "180",
     "BRIDGE_FPS": "30",
     "BRIDGE_THROTTLE": "1",
+    "OPENRGB_ENABLE": "0",
+    "OPENRGB_HOST": "127.0.0.1",
+    "OPENRGB_PORT": "6742",
+    "OPENRGB_UDP_PORT": "19446",
 }
 CHOICES = {
     "HYPERHDR_MODE": {"auto", "native", "distrobox", "external"},
     "CAPTURE_MODE": {"flatbuffers", "v4l2"},
     "BRIDGE_THROTTLE": {"0", "1"},
+    "OPENRGB_ENABLE": {"0", "1"},
 }
+# Chaves que só afetam a parte do OpenRGB: mudam sem reiniciar a captura do gamescope
+OPENRGB_KEYS = {"OPENRGB_ENABLE", "OPENRGB_HOST", "OPENRGB_PORT", "OPENRGB_UDP_PORT"}
 DETECT_TTL = 30
 
 
@@ -78,6 +89,15 @@ async def _systemctl(*args: str) -> tuple[int, str]:
     return await _run("systemctl", "--user", *args)
 
 
+async def _stop(*units: str) -> tuple[int, str]:
+    # A ponte do OpenRGB precisa do servidor para devolver as luzes ao efeito de fábrica;
+    # o systemd não garantiu essa ordem na parada, então para a ponte antes, em separado.
+    if OPENRGB_UNIT in units:
+        await _systemctl("stop", OPENRGB_UNIT)
+        units = tuple(u for u in units if u != OPENRGB_UNIT)
+    return await _systemctl("stop", *units) if units else (0, "")
+
+
 def _read_config() -> dict:
     cfg = dict(DEFAULTS)
     try:
@@ -102,6 +122,8 @@ def _write_config(cfg: dict) -> None:
 def _unit_files() -> dict:
     launch = os.path.join(SCRIPTS, "hyperhdr-launch.sh")
     bridge = os.path.join(SCRIPTS, "hyperhdr-gamescope-bridge.sh")
+    orgb_server = os.path.join(SCRIPTS, "openrgb-server.sh")
+    orgb_bridge = os.path.join(SCRIPTS, "hyperhdr-openrgb-bridge.py")
     return {
         HYPERHDR_UNIT: f"""[Unit]
 Description=HyperHDR (Decky HyperHDR Toggle)
@@ -132,6 +154,37 @@ ExecStart=/bin/bash "{bridge}"
 Restart=always
 RestartSec=5
 Nice=10
+
+[Install]
+WantedBy=default.target
+""",
+        OPENRGB_SERVER_UNIT: f"""[Unit]
+Description=Servidor OpenRGB sem interface (Decky HyperHDR Toggle)
+After=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=-{CONFIG_FILE}
+ExecStart=/bin/bash "{orgb_server}"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+""",
+        OPENRGB_UNIT: f"""[Unit]
+Description=Luzes do PC seguindo o HyperHDR via OpenRGB (Decky HyperHDR Toggle)
+Wants={OPENRGB_SERVER_UNIT}
+After={OPENRGB_SERVER_UNIT}
+
+[Service]
+Type=simple
+EnvironmentFile=-{CONFIG_FILE}
+ExecStart=/usr/bin/python3 "{orgb_bridge}"
+# Ao parar, devolve as luzes ao efeito de fábrica antes de sair
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target
@@ -172,9 +225,10 @@ class Plugin:
 
     def _units(self, cfg: dict) -> list[str]:
         # Com HyperHDR externo só a captura roda nesta máquina
-        if cfg["HYPERHDR_MODE"] == "external":
-            return [BRIDGE_UNIT]
-        return [BRIDGE_UNIT, HYPERHDR_UNIT]
+        units = [BRIDGE_UNIT] if cfg["HYPERHDR_MODE"] == "external" else [BRIDGE_UNIT, HYPERHDR_UNIT]
+        if cfg.get("OPENRGB_ENABLE") == "1":
+            units += OPENRGB_UNITS
+        return units
 
     async def _detect(self, force: bool = False) -> tuple[str, str]:
         if force or time.monotonic() - self._detected_at > DETECT_TTL:
@@ -227,7 +281,7 @@ class Plugin:
         cfg = _read_config()
         kind, detail = await self._detect()
         states = {}
-        for unit in (HYPERHDR_UNIT, BRIDGE_UNIT):
+        for unit in (HYPERHDR_UNIT, BRIDGE_UNIT, OPENRGB_UNIT):
             _, out = await _systemctl("is-active", unit)
             states[unit] = out
         _, enabled = await _systemctl("is-enabled", BRIDGE_UNIT)
@@ -244,6 +298,7 @@ class Plugin:
             "detail": detail,
             "hyperhdr": "external" if kind == "external" else states[HYPERHDR_UNIT],
             "bridge": states[BRIDGE_UNIT],
+            "openrgb": states[OPENRGB_UNIT] if cfg["OPENRGB_ENABLE"] == "1" else "disabled",
             "api": info is not None,
             "leds": components.get("LEDDEVICE"),
             "forwarding": components.get("FORWARDER"),
@@ -263,6 +318,8 @@ class Plugin:
         if key in CHOICES and value not in CHOICES[key]:
             return False
         cfg = _read_config()
+        if key in OPENRGB_KEYS:
+            return await self._set_openrgb_setting(cfg, key, value)
         old_units = self._units(cfg)
         _, active = await _systemctl("is-active", BRIDGE_UNIT)
         _, enabled = await _systemctl("is-enabled", BRIDGE_UNIT)
@@ -271,11 +328,27 @@ class Plugin:
         await self._detect(force=True)
         if active == "active":
             # Aplica na hora: para o conjunto antigo e sobe o novo (pode mudar com HyperHDR externo)
-            await _systemctl("stop", *old_units)
+            await _stop(*old_units)
             await _systemctl("start", *self._units(cfg))
         if enabled == "enabled":
             await _systemctl("disable", *old_units)
             await _systemctl("enable", *self._units(cfg))
+        return True
+
+    async def _set_openrgb_setting(self, cfg: dict, key: str, value: str) -> bool:
+        # Liga/desliga só as luzes do PC, sem desconectar a captura do gamescope
+        _, active = await _systemctl("is-active", BRIDGE_UNIT)
+        _, enabled = await _systemctl("is-enabled", BRIDGE_UNIT)
+        was_on = cfg["OPENRGB_ENABLE"] == "1"
+        cfg[key] = value
+        _write_config(cfg)
+        now_on = cfg["OPENRGB_ENABLE"] == "1"
+        if was_on and (not now_on or active == "active"):
+            await _stop(*OPENRGB_UNITS)
+        if now_on and active == "active":
+            await _systemctl("start", *OPENRGB_UNITS)
+        if enabled == "enabled":
+            await _systemctl("enable" if now_on else "disable", *OPENRGB_UNITS)
         return True
 
     async def set_quality(self, width: int, height: int, fps: int) -> bool:
@@ -288,8 +361,10 @@ class Plugin:
         return True
 
     async def set_enabled(self, enabled: bool) -> bool:
-        units = self._units(_read_config())
-        code, out = await _systemctl("start" if enabled else "stop", *units)
+        if enabled:
+            code, out = await _systemctl("start", *self._units(_read_config()))
+        else:
+            code, out = await _stop(*ALL_UNITS)
         if code != 0:
             decky.logger.error(f"systemctl {'start' if enabled else 'stop'} falhou: {out}")
         return code == 0
@@ -307,7 +382,7 @@ class Plugin:
     async def set_autostart(self, enabled: bool) -> bool:
         cfg = _read_config()
         # Desativa os dois sempre, para não sobrar o HyperHDR habilitado ao mudar para externo
-        await _systemctl("disable", HYPERHDR_UNIT, BRIDGE_UNIT)
+        await _systemctl("disable", *ALL_UNITS)
         code, out = (0, "") if not enabled else await _systemctl("enable", *self._units(cfg))
         if code != 0:
             decky.logger.error(f"systemctl enable falhou: {out}")
@@ -367,7 +442,8 @@ class Plugin:
 
     async def _uninstall(self):
         # Não deixa a captura rodando nem units apontando para um plugin removido
-        await _systemctl("disable", "--now", HYPERHDR_UNIT, BRIDGE_UNIT)
+        await _stop(*ALL_UNITS)
+        await _systemctl("disable", *ALL_UNITS)
         for name in _unit_files():
             try:
                 os.remove(os.path.join(UNIT_DIR, name))
