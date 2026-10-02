@@ -23,6 +23,7 @@ gamescope ──PipeWire──▶ gst-launch (reduz p/ 320x180) ──▶ HyperH
 - Liga/desliga a saída de LEDs e o forwarder sem parar o HyperHDR
 - "Iniciar com o sistema" via serviços systemd do usuário
 - Escolha de qualidade (160x90 até 640x360, 25–60 fps)
+- **Freio da captura** (ligado por padrão): reduz a perda de FPS no jogo de ~5,3% para ~1,6%
 
 ## Requisitos
 
@@ -57,15 +58,21 @@ A configuração do HyperHDR (`~/.hyperhdr`) é a mesma nos modos nativo, portá
 
 ## Desempenho
 
-Medido no Bazzite, em Game Mode a 3840x2160, com captura reduzida para 320x180 a 30 fps (percentual de **um** núcleo):
+Medido no Bazzite com Crimson Desert em 4K (~105 fps), captura em 320x180 a 30 fps. Cada rodada foi registrada por 30 s no MangoHud.
 
-| Processo | CPU |
-| --- | --- |
-| GStreamer (captura + escala) | ~2,2–2,4% |
-| Emissor Flatbuffers | ~0,5% |
-| HyperHDR | ~1–2,4% |
+| Situação | FPS médio | Perda | CPU da ponte (1 núcleo) |
+| --- | --- | --- | --- |
+| Captura desligada | 105,8 | — | — |
+| Captura ligada, **com freio** (padrão) | 104,2 | ~1,6% | ~3,2% |
+| Captura ligada, sem freio | 100,2 | ~5,3% | ~9,4% |
 
-No FPS do jogo, o custo vem do gamescope, não destes processos. No Crimson Desert em 4K (MangoHud, 3 rodadas A-B-A de 30 s), a média caiu de 105,5 para ~99,7 fps (−5,5%) com a captura ligada. A qualidade escolhida no plugin não muda isso, porque o gamescope sempre copia a tela em resolução cheia. Desligado pelo botão, nada fica rodando.
+O HyperHDR em si usa ~1–2% de um núcleo e não teve custo mensurável no FPS.
+
+**De onde vem a perda:** enquanto alguém consome o nó PipeWire, o gamescope renderiza uma cópia da tela inteira a cada vblank e espera a GPU terminar (`paint_pipewire()` → `vulkan_screenshot` + `vulkan_wait`). Em 4K isso pesa, e a qualidade escolhida no plugin não muda nada, porque a cópia acontece em resolução cheia antes da ponte reduzir a imagem.
+
+**O freio:** a ponte segura cada quadro até completar 1/FPS (33 ms a 30 fps) antes de devolvê-lo. Sem buffer livre, o gamescope pula a cópia: em vez de ~100 cópias por segundo ele faz ~30. O efeito colateral é que o gamescope grava `pipewire: warning: out of buffers` no journal a cada vblank em que pulou a cópia, ~90 linhas por segundo enquanto a captura roda. Não há como filtrar isso sem root (`LogFilterPatterns=` não vale para serviços de usuário). Se o log incomodar, desligue o **Freio da captura** no painel. O freio precisa do `python3-gi`; sem ele, a ponte usa o `gst-launch` e roda sem freio.
+
+Desligado pelo botão, nada fica rodando.
 
 ## Arquivos
 
@@ -78,7 +85,7 @@ No FPS do jogo, o custo vem do gamescope, não destes processos. No Crimson Dese
 - **O gamescope pode travar ao desligar a captura com um jogo aberto.** Se a captura desconecta no meio da cópia de um quadro, o gamescope 3.16.x pode fechar com SIGSEGV, levando o jogo junto. Foi visto 1 vez em ~10 desligamentos. Quando o `python3-gi` (bindings do GStreamer) está disponível, a ponte pausa o stream e espera antes de desconectar, para reduzir esse risco. Mesmo assim, **prefira ligar/desligar fora dos jogos**. Trocar a qualidade ou o método de captura também reinicia a ponte.
 - **Nunca force formato no nó `gamescope`.** Se um consumidor pedir um formato que o gamescope recusa (ex.: `pipewiresrc ! video/x-raw,format=NV12`), o PipeWire do gamescope encerra e o nó só volta depois de reiniciar a sessão. A ponte não restringe o formato. Reportado em [OpenGamingCollective/gamescope#27](https://github.com/OpenGamingCollective/gamescope/issues/27).
 - **v4l2loopback no Bazzite/Fedora Atomic:** o módulo é carregado no initramfs, que não lê `/etc/modprobe.d`. O `setup-v4l2loopback.sh` vale até o próximo boot. Para persistir, use argumentos do kernel: `rpm-ostree kargs --append-if-missing='v4l2loopback.devices=2' --append-if-missing='v4l2loopback.video_nr=0,50' --append-if-missing='v4l2loopback.exclusive_caps=1,1' --append-if-missing='v4l2loopback.card_label=OBS Virtual Camera,GamescopeCapture'`. Ou simplesmente use o modo Flatbuffers.
-- **Custo no FPS:** enquanto alguém consome o nó, o gamescope renderiza uma cópia da tela inteira a cada vblank e espera a GPU terminar. No Crimson Desert em 4K isso custou ~5–6% de FPS médio (105,5 → 99,7). O próprio HyperHDR não teve custo mensurável.
+- **Log do gamescope com o freio ligado:** ~90 linhas/s de `out of buffers` no journal enquanto captura (veja *Desempenho*).
 
 ## Problemas comuns
 
@@ -106,7 +113,7 @@ HyperHDR can be **native**, a **portable** build the plugin downloads from the o
 
 **Requirements:** gamescope session, `gst-launch-1.0` with `pipewiresrc`, `python3`, `pw-cli`.
 
-**Cost:** about 3–5% of a single CPU core at 320x180@30. Game FPS drops ~5–6% while capturing (Crimson Desert, 4K): gamescope renders a full-resolution copy every vblank for any PipeWire consumer. Nothing runs while it is off.
+**Cost:** gamescope renders a full-resolution copy every vblank for any PipeWire consumer. In Crimson Desert at 4K that cost ~5.3% FPS. The bridge's **capture throttle** (on by default) holds each buffer for 1/FPS, so gamescope skips most copies. With it the loss is ~1.6% and the bridge uses ~3% of one core. The side effect is that gamescope logs `out of buffers` ~90×/s while capturing, which you can turn off in the panel. Nothing runs while it is off.
 
 **Known issues:** gamescope 3.16.x may SIGSEGV when the capture disconnects mid-copy (seen once in ~10 stops), so prefer toggling outside games. The bridge pauses the stream before disconnecting when `python3-gi` is available. Never force a format on the `gamescope` node: a rejected negotiation kills gamescope's PipeWire until the session restarts.
 

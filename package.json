@@ -1,6 +1,6 @@
 {
   "name": "hyperhdr-toggle",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Decky plugin: HyperHDR ambient lighting in Steam Game Mode (gamescope capture via PipeWire)",
   "type": "module",
   "scripts": {

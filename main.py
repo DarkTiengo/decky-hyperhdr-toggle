@@ -34,10 +34,12 @@ DEFAULTS = {
     "BRIDGE_WIDTH": "320",
     "BRIDGE_HEIGHT": "180",
     "BRIDGE_FPS": "30",
+    "BRIDGE_THROTTLE": "1",
 }
 CHOICES = {
     "HYPERHDR_MODE": {"auto", "native", "distrobox", "external"},
     "CAPTURE_MODE": {"flatbuffers", "v4l2"},
+    "BRIDGE_THROTTLE": {"0", "1"},
 }
 DETECT_TTL = 30
 

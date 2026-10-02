@@ -272,6 +272,15 @@ function Content() {
             </PanelSectionRow>
           )}
           <PanelSectionRow>
+            <ToggleField
+              label="Freio da captura"
+              description="Menos FPS perdido no jogo; o gamescope grava muitos avisos no log"
+              checked={settings.BRIDGE_THROTTLE !== "0"}
+              disabled={busy}
+              onChange={(v) => onSetting("BRIDGE_THROTTLE", v ? "1" : "0")}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
             <DropdownItem
               label="Qualidade da captura"
               rgOptions={QUALITY_OPTIONS}

@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 import threading
+import time
 
 import gi
 
@@ -30,13 +31,17 @@ MODE = os.environ.get("CAPTURE_MODE", "flatbuffers")
 WIDTH = int(os.environ.get("BRIDGE_WIDTH", "320"))
 HEIGHT = int(os.environ.get("BRIDGE_HEIGHT", "180"))
 FPS = int(os.environ.get("BRIDGE_FPS", "30"))
+# Segura cada quadro no thread de streaming até completar 1/FPS. Enquanto isso o
+# gamescope fica sem buffer livre e pula a cópia da tela (menos CPU aqui e menos
+# trabalho de GPU lá). Efeito colateral: o gamescope loga "out of buffers" a cada vblank.
+THROTTLE = os.environ.get("BRIDGE_THROTTLE", "1") != "0"
 
 
 def build_pipeline() -> str:
     # Nunca restringir o formato direto no pipewiresrc: uma negociação recusada
     # derruba o PipeWire do gamescope até a sessão reiniciar.
     src = (
-        "pipewiresrc target-object=gamescope do-timestamp=true"
+        "pipewiresrc name=src target-object=gamescope do-timestamp=true"
         f" ! videorate drop-only=true max-rate={FPS}"
         " ! videoscale method=nearest-neighbour"
         f" ! video/x-raw,width={WIDTH},height={HEIGHT}"
@@ -101,6 +106,19 @@ def main() -> int:
         elif msg.type == Gst.MessageType.EOS:
             loop.quit()
 
+    if THROTTLE:
+        interval = 1.0 / FPS
+        slot = {"next": 0.0}
+
+        def throttle(_pad, _info):
+            now = time.monotonic()
+            if slot["next"] > now:
+                time.sleep(slot["next"] - now)
+            slot["next"] = max(now, slot["next"]) + interval
+            return Gst.PadProbeReturn.OK
+
+        pipeline.get_by_name("src").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, throttle)
+
     bus = pipeline.get_bus()
     bus.add_signal_watch()
     bus.connect("message", on_message)
@@ -131,7 +149,7 @@ def main() -> int:
         signal_add(GLib.PRIORITY_HIGH, sig, on_signal)
 
     pipeline.set_state(Gst.State.PLAYING)
-    print(f"gamescope conectado, modo {MODE} {WIDTH}x{HEIGHT}@{FPS} (desligamento suave)", flush=True)
+    print(f"gamescope conectado, modo {MODE} {WIDTH}x{HEIGHT}@{FPS} (desligamento suave{', freio' if THROTTLE else ''})", flush=True)
     loop.run()
     pipeline.set_state(Gst.State.NULL)
     return exit_code
