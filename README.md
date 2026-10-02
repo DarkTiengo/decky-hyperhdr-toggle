@@ -1,126 +1,384 @@
-# HyperHDR Toggle (Decky)
+# HyperHDR Toggle
 
-Plugin do [Decky Loader](https://decky.xyz) que liga e desliga o [HyperHDR](https://github.com/awawa-dev/HyperHDR) **direto pelo Game Mode** (sessão gamescope do Steam), capturando a tela do jogo para os seus LEDs.
+**Luz ambiente com [HyperHDR](https://github.com/awawa-dev/HyperHDR) no Game Mode do Steam.** Este é um plugin do [Decky Loader](https://decky.xyz) que captura a imagem do jogo direto do gamescope e manda para os seus LEDs. Ligar e desligar fica no menu rápido (…), sem sair do jogo e sem passar pelo modo Desktop.
 
-*English version below.*
+[![Release](https://img.shields.io/github/v/release/DarkTiengo/decky-hyperhdr-toggle)](https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest)
+[![License](https://img.shields.io/github/license/DarkTiengo/decky-hyperhdr-toggle)](LICENSE)
 
-## Por que existe
+*English summary at the end.*
 
-O grabber de tela do HyperHDR no Linux usa o `xdg-desktop-portal`, que existe no KDE/GNOME mas **não no gamescope**. No Game Mode o HyperHDR fica sem imagem. O gamescope, porém, publica a saída composta como um nó PipeWire chamado `gamescope`. Este plugin lê esse nó com GStreamer e entrega os quadros ao HyperHDR.
+---
+
+## Sumário
+
+- [O problema](#o-problema)
+- [Como funciona](#como-funciona)
+- [Recursos](#recursos)
+- [Requisitos](#requisitos)
+- [Instalação](#instalação)
+- [Configuração passo a passo](#configuração-passo-a-passo)
+- [Painel do plugin](#painel-do-plugin)
+- [Configuração avançada](#configuração-avançada)
+- [Desempenho](#desempenho)
+- [Problemas conhecidos](#problemas-conhecidos)
+- [Solução de problemas](#solução-de-problemas)
+- [Desinstalação](#desinstalação)
+- [Desenvolvimento](#desenvolvimento)
+- [Status e créditos](#status-e-créditos)
+- [English](#english)
+
+---
+
+## O problema
+
+No Linux, o HyperHDR captura a tela pelo `xdg-desktop-portal` (ScreenCast). O KDE e o GNOME têm esse portal, mas **o gamescope, compositor do Game Mode do Steam, não tem**. Por isso o HyperHDR funciona no modo Desktop e fica sem imagem no Game Mode, justamente onde se joga. Quem usa Bazzite, SteamOS, ChimeraOS e similares acabava tendo que jogar no Desktop para ter luz ambiente.
+
+O gamescope, porém, publica a imagem já composta da tela como um **nó PipeWire chamado `gamescope`**. É o mesmo que o Steam usa para gravar e para o Remote Play. Este plugin lê esse nó e entrega os quadros ao HyperHDR.
+
+## Como funciona
 
 ```
-gamescope ──PipeWire──▶ gst-launch (reduz p/ 320x180) ──▶ HyperHDR ──▶ LEDs
-                                       │
-                         Flatbuffers (TCP 19400, padrão)
-                         ou v4l2loopback (/dev/video50, opcional)
+ ┌───────────┐  PipeWire   ┌──────────────────────────┐   Flatbuffers (TCP 19400)   ┌──────────┐     ┌──────┐
+ │ gamescope │ ──────────▶ │ ponte (GStreamer+Python) │ ──────────────────────────▶ │ HyperHDR │ ──▶ │ LEDs │
+ │ (Game     │  nó         │ reduz p/ 320x180 @30fps  │   ou v4l2loopback           │ (local ou│     └──────┘
+ │  Mode)    │ "gamescope" │ freio + desligamento     │   (/dev/video50)            │  remoto) │
+ └───────────┘             │ suave                    │                             └──────────┘
+                           └──────────────────────────┘
 ```
+
+- **Ponte de captura** (`decky-hyperhdr-bridge.service`): espera o nó `gamescope` aparecer, lê os quadros com o GStreamer, reduz a imagem e envia ao HyperHDR. Quando você troca para o Desktop, ela volta a esperar sozinha.
+- **HyperHDR** (`decky-hyperhdr.service`): roda nativo, portátil ou dentro de um distrobox. Também pode estar em outro computador.
+- **Plugin**: cria os dois serviços systemd do usuário, liga e desliga os dois e mostra o estado no menu rápido. Os serviços não dependem do Decky, então a captura continua mesmo se a interface do Steam reiniciar.
 
 ## Recursos
 
-- Botão no menu rápido (…) para ligar/desligar captura + HyperHDR
-- Funciona com HyperHDR **nativo**, **portátil** (o plugin baixa a release oficial), **distrobox** ou **em outro computador** (só a captura roda aqui)
-- Captura por **Flatbuffers** (sem root, sem módulo de kernel) ou **v4l2loopback**
-- Liga/desliga a saída de LEDs e o forwarder sem parar o HyperHDR
-- "Iniciar com o sistema" via serviços systemd do usuário
-- Escolha de qualidade (160x90 até 640x360, 25–60 fps)
+- Botão no menu rápido (…) para ligar e desligar a captura e o HyperHDR
+- HyperHDR **nativo**, **portátil** (o plugin baixa a release oficial, sem root), em **distrobox** ou **em outro computador** (Raspberry Pi, Home Assistant, etc.)
+- Dois métodos de captura:
+  - **Flatbuffers** (padrão): sem root, sem módulo de kernel, sem mudar a configuração do HyperHDR
+  - **v4l2loopback**: webcam virtual lida pelo grabber de vídeo do HyperHDR
 - **Freio da captura** (ligado por padrão): reduz a perda de FPS no jogo de ~5,3% para ~1,6%
+- **Desligamento suave**: pausa o stream antes de desconectar, para evitar um travamento do gamescope
+- Liga e desliga a saída de LEDs e o forwarder do HyperHDR sem parar o serviço
+- Opção "Iniciar com o sistema"
+- Quatro perfis de qualidade, de 160x90 a 640x360 e de 25 a 60 fps
 
 ## Requisitos
 
-- Decky Loader
-- Sessão gamescope do Steam (SteamOS, Bazzite, ChimeraOS, etc.)
-- `gst-launch-1.0` com os plugins `pipewiresrc`, `videoscale`, `videoconvert`, `videorate`
-- `python3` e `pw-cli` no sistema
-- Para o modo v4l2loopback: o módulo `v4l2loopback` e `v4l2-ctl`
+| Item | Observação |
+| --- | --- |
+| [Decky Loader](https://decky.xyz) | v3 ou mais novo |
+| Sessão gamescope do Steam | SteamOS, Bazzite, ChimeraOS, Nobara Deck Edition, etc. |
+| GStreamer | `gst-launch-1.0` com `pipewiresrc`, `videorate`, `videoscale` e `videoconvert` |
+| `python3`, `pw-cli` | Já vêm nessas distros |
+| `python3-gi` (bindings do GStreamer) | **Recomendado.** Habilita o freio e o desligamento suave. Sem ele, a ponte usa o `gst-launch` sem essas proteções. |
+| HyperHDR | Qualquer versão com servidor Flatbuffers (habilitado por padrão). Testado com a v22. |
+| *Só para o modo v4l2:* | módulo `v4l2loopback` e `v4l2-ctl` |
+
+Para conferir no terminal (Konsole no Desktop, ou SSH):
+
+```bash
+gst-inspect-1.0 pipewiresrc >/dev/null && echo "pipewiresrc OK"
+python3 -c 'import gi; gi.require_version("Gst","1.0")' && echo "python3-gi OK"
+```
 
 ## Instalação
 
-1. Baixe o `hyperhdr-toggle.zip` da [última release](https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest).
-2. No Decky: **Configurações → Geral → Modo desenvolvedor** ligado, depois **Desenvolvedor → Instalar plugin de um ZIP** e escolha o arquivo.
-   - Ou use **Instalar plugin de uma URL** com o link do zip da release.
-3. Abra o menu (…) → **HyperHDR**.
+### 1. Instale o Decky Loader
 
-### Escolhendo onde está o HyperHDR
+Siga as instruções em [decky.xyz](https://decky.xyz). No Bazzite ele também pode ser instalado com `ujust setup-decky`.
 
-| Opção | Quando usar |
-| --- | --- |
-| Automático | Detecta nesta ordem: `HYPERHDR_BIN`, portátil do plugin, `hyperhdr` no PATH, distrobox |
-| Nativo / portátil | HyperHDR instalado no sistema, ou o portátil baixado pelo botão **Instalar HyperHDR portátil** (vai para `~/.local/share/hyperhdr-portable`, sem precisar de root; ideal em sistemas imutáveis como SteamOS) |
-| Distrobox | HyperHDR dentro de um container (nome padrão `hyperhdr-box`, procura qualquer container com "hyperhdr" no nome) |
-| Outro computador | O HyperHDR roda em outra máquina (ex.: Raspberry Pi, Home Assistant). Informe `host:19400` no campo **Servidor Flatbuffers** |
+### 2. Ative o modo desenvolvedor do Decky
 
-A configuração do HyperHDR (`~/.hyperhdr`) é a mesma nos modos nativo, portátil e distrobox.
+No Game Mode: menu rápido (…) → ícone da tomada (Decky) → engrenagem → **Geral** → ligue **Modo desenvolvedor**. Aparece a aba **Desenvolvedor**.
 
-### Métodos de captura
+### 3. Instale o plugin
 
-- **Flatbuffers (padrão):** envia os quadros para o servidor Flatbuffers do HyperHDR (habilitado por padrão, porta 19400) com prioridade 150. Não precisa de root nem de configuração no HyperHDR. Ao desligar, a prioridade some sozinha.
-- **v4l2loopback:** escreve numa webcam virtual que o HyperHDR lê pelo grabber de vídeo. Rode uma vez `sudo bash ~/homebrew/plugins/<pasta do plugin>/scripts/setup-v4l2loopback.sh` e, na web UI do HyperHDR, ative **Video capture** em `/dev/video50`. O script preserva a câmera virtual do OBS no Bazzite.
+Na aba **Desenvolvedor** do Decky, escolha uma das opções:
+
+- **Instalar plugin de uma URL** e cole:
+  ```
+  https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest/download/hyperhdr-toggle.zip
+  ```
+- **Instalar plugin de um arquivo ZIP**, depois de baixar o `hyperhdr-toggle.zip` da [última release](https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest).
+
+O plugin aparece no menu rápido como **HyperHDR**. Ao carregar, ele cria os serviços em `~/.config/systemd/user/` e o arquivo de configuração `~/.config/hyperhdr-decky.env`.
+
+> O plugin ainda não está na loja oficial do Decky. Os detalhes estão em [Status e créditos](#status-e-créditos).
+
+## Configuração passo a passo
+
+Escolha o cenário que corresponde ao seu caso.
+
+### Cenário A: HyperHDR num distrobox (comum no Bazzite)
+
+Se você já usa o HyperHDR num container (por exemplo, um `hyperhdr-box` com Ubuntu):
+
+1. No painel, deixe **Onde está o HyperHDR** em **Automático**. O plugin procura um container chamado `hyperhdr-box` ou qualquer um com "hyperhdr" no nome.
+2. Em **Status**, a linha HyperHDR deve mostrar `(distrobox)`.
+3. Ligue a chave **HyperHDR**.
+
+A configuração do HyperHDR (`~/.hyperhdr`) é a mesma do Desktop, porque o distrobox compartilha a pasta pessoal. Se o container tiver outro nome, ajuste `HYPERHDR_BOX` em [Configuração avançada](#configuração-avançada).
+
+### Cenário B: sem HyperHDR instalado (SteamOS, sistemas imutáveis)
+
+1. Em **Onde está o HyperHDR**, escolha **Nativo / portátil**.
+2. Toque em **Instalar HyperHDR portátil**. O plugin baixa o pacote oficial `HyperHDR-<versão>-Linux-x86_64.tar.gz` da [release mais recente](https://github.com/awawa-dev/HyperHDR/releases/latest) e instala em `~/.local/share/hyperhdr-portable`, sem root.
+3. Ligue a chave **HyperHDR**.
+4. Abra a **Web UI** mostrada no painel (`http://<ip>:8090`) em qualquer navegador da rede e configure os LEDs:
+   - **LED Hardware**: tipo de controlador (WLED, Adalight/serial, etc.) e layout
+   - **Capturing hardware**: nada a mudar no modo Flatbuffers
+5. Se os LEDs forem por **USB/serial**, o seu usuário precisa de acesso à porta (grupo `uucp` ou `dialout`, conforme a distro).
+
+O mesmo botão atualiza o HyperHDR portátil depois.
+
+### Cenário C: HyperHDR instalado no sistema
+
+Se o comando `hyperhdr` existe no PATH (pacote `.deb`, `.rpm` ou `.pkg.tar.zst`), o modo **Automático** usa esse binário. Para apontar outro caminho, defina `HYPERHDR_BIN`.
+
+> Se a distro já rodar o HyperHDR como serviço do sistema (`hyperhdr@<usuário>.service`), desative esse serviço ou use o cenário D apontando para `127.0.0.1:19400`, para não rodar dois ao mesmo tempo.
+
+### Cenário D: HyperHDR em outro computador
+
+Para quem tem o HyperHDR num Raspberry Pi, no Home Assistant ou em outro PC ligado aos LEDs:
+
+1. Em **Onde está o HyperHDR**, escolha **Outro computador**.
+2. Em **Servidor Flatbuffers (host:porta)**, informe o endereço, por exemplo `192.168.0.127:19400`.
+3. Ligue a chave **HyperHDR**. Só a captura roda nesta máquina; a Web UI e as chaves de LEDs passam a falar com o HyperHDR remoto.
+
+No HyperHDR remoto, confira em **Network services** se o **Flatbuffers server** está ativo (porta 19400). Ele vem ativo por padrão.
+
+### Escolha do método de captura
+
+| | Flatbuffers (padrão) | v4l2loopback |
+| --- | --- | --- |
+| Root | Não | Sim, uma vez |
+| Configuração no HyperHDR | Nenhuma | Ativar *Video capture* em `/dev/video50` |
+| Funciona com HyperHDR remoto | Sim | Não |
+| Prioridade no HyperHDR | 150 (acima dos grabbers) | a do grabber de vídeo (240) |
+
+Use o **Flatbuffers**, a menos que você tenha um motivo específico. Para o v4l2loopback:
+
+```bash
+sudo bash ~/homebrew/plugins/hyperhdr-toggle/scripts/setup-v4l2loopback.sh
+```
+
+Depois, na Web UI do HyperHDR, ative **Video capture** em `GamescopeCapture (video50)`, 320x180, YUYV, e escolha **v4l2loopback** em **Método de captura** no painel. No Bazzite e no Fedora Atomic, leia [Problemas conhecidos](#problemas-conhecidos) antes, porque a configuração do módulo não sobrevive ao reboot sem um passo extra.
+
+## Painel do plugin
+
+| Seção | Item | O que faz |
+| --- | --- | --- |
+| Controle | **HyperHDR** | Liga e desliga a captura e o HyperHDR local |
+| | **Saída de LEDs** | Liga e desliga o componente `LEDDEVICE` do HyperHDR sem parar o serviço |
+| | **Encaminhar (forwarder)** | Só aparece se você usa o forwarder. Pausa o envio para outro HyperHDR. |
+| | **Iniciar com o sistema** | Habilita os serviços no login. A captura começa sozinha quando o Game Mode abre. |
+| Status | **HyperHDR** | Estado do serviço e o modo detectado (nativo, distrobox, externo, não encontrado) |
+| | **Captura** | Estado da ponte. "Rodando" no Desktop significa que ela está esperando o gamescope. |
+| | **Web UI** | Endereço da interface web do HyperHDR |
+| Configuração | **Onde está o HyperHDR** | Automático / Nativo ou portátil / Distrobox / Outro computador |
+| | **Instalar/Atualizar HyperHDR portátil** | Baixa a última release oficial para `~/.local/share/hyperhdr-portable` |
+| | **Método de captura** | Flatbuffers ou v4l2loopback |
+| | **Servidor Flatbuffers** | `host:porta` para onde os quadros vão. Padrão `127.0.0.1:19400`. |
+| | **Freio da captura** | Liga e desliga o freio (veja [Desempenho](#desempenho)) |
+| | **Qualidade da captura** | Econômico 160x90@25, Padrão 320x180@30, Detalhado 640x360@30, Fluido 320x180@60 |
+
+Mudanças de configuração com a captura ligada reiniciam a ponte. Faça isso com o jogo fechado; o motivo está em [Problemas conhecidos](#problemas-conhecidos).
+
+## Configuração avançada
+
+O plugin guarda tudo em `~/.config/hyperhdr-decky.env`. Você pode editar o arquivo à mão e depois reiniciar a captura. Chaves extras são preservadas.
+
+| Chave | Padrão | Descrição |
+| --- | --- | --- |
+| `HYPERHDR_MODE` | `auto` | `auto`, `native`, `distrobox` ou `external` |
+| `HYPERHDR_BOX` | `hyperhdr-box` | Nome do container do distrobox |
+| `HYPERHDR_BIN` | — | Caminho de um binário `hyperhdr` específico (modo nativo) |
+| `HYPERHDR_PORTABLE_DIR` | `~/.local/share/hyperhdr-portable` | Onde fica o HyperHDR portátil |
+| `CAPTURE_MODE` | `flatbuffers` | `flatbuffers` ou `v4l2` |
+| `FLATBUFFERS_TARGET` | `127.0.0.1:19400` | Servidor Flatbuffers de destino |
+| `FLATBUFFERS_PRIORITY` | `150` | Prioridade da imagem no HyperHDR (menor = mais importante) |
+| `V4L2_DEVICE` | `/dev/video50` | Dispositivo do modo v4l2 |
+| `BRIDGE_WIDTH` / `BRIDGE_HEIGHT` / `BRIDGE_FPS` | `320` / `180` / `30` | Tamanho e taxa da captura |
+| `BRIDGE_THROTTLE` | `1` | `0` desliga o freio |
+| `BRIDGE_IMPL` | `auto` | `gst-launch` força a ponte antiga, sem freio e sem desligamento suave |
+
+Ordem da detecção automática: `HYPERHDR_BIN` → HyperHDR portátil → `hyperhdr` no PATH → distrobox.
+
+**Arquivos e comandos úteis:**
+
+```bash
+# serviços
+systemctl --user status decky-hyperhdr decky-hyperhdr-bridge
+# logs da ponte e do HyperHDR
+journalctl --user -u decky-hyperhdr-bridge -u decky-hyperhdr -f
+# logs do plugin (Decky)
+ls ~/homebrew/logs/hyperhdr-toggle/
+```
 
 ## Desempenho
 
-Medido no Bazzite com Crimson Desert em 4K (~105 fps), captura em 320x180 a 30 fps. Cada rodada foi registrada por 30 s no MangoHud.
+Medido no Bazzite (Ryzen 7 9700X, Radeon RX 9070 XT) com Crimson Desert em 4K a ~105 fps. Captura em 320x180 a 30 fps, rodadas de 30 s no MangoHud, em sequência A-B-A.
 
 | Situação | FPS médio | Perda | CPU da ponte (1 núcleo) |
 | --- | --- | --- | --- |
 | Captura desligada | 105,8 | — | — |
-| Captura ligada, **com freio** (padrão) | 104,2 | ~1,6% | ~3,2% |
+| Captura ligada, **com freio** (padrão) | 104,2 | **~1,6%** | ~3,2% |
 | Captura ligada, sem freio | 100,2 | ~5,3% | ~9,4% |
 
-O HyperHDR em si usa ~1–2% de um núcleo e não teve custo mensurável no FPS.
+O HyperHDR em si usa ~1–2% de um núcleo e não teve custo mensurável no FPS. Com a captura desligada pelo botão, nada fica rodando.
 
-**De onde vem a perda:** enquanto alguém consome o nó PipeWire, o gamescope renderiza uma cópia da tela inteira a cada vblank e espera a GPU terminar (`paint_pipewire()` → `vulkan_screenshot` + `vulkan_wait`). Em 4K isso pesa, e a qualidade escolhida no plugin não muda nada, porque a cópia acontece em resolução cheia antes da ponte reduzir a imagem.
+**De onde vem a perda.** Enquanto alguém consome o nó PipeWire, o gamescope renderiza uma cópia da tela inteira a cada vblank e espera a GPU terminar (`paint_pipewire()` → `vulkan_screenshot` + `vulkan_wait`). A cópia é sempre em resolução cheia; o gamescope só oferece a resolução de saída. Por isso a qualidade escolhida no plugin não muda o custo no FPS, só o trabalho da ponte.
 
-**O freio:** a ponte segura cada quadro até completar 1/FPS (33 ms a 30 fps) antes de devolvê-lo. Sem buffer livre, o gamescope pula a cópia: em vez de ~100 cópias por segundo ele faz ~30. O efeito colateral é que o gamescope grava `pipewire: warning: out of buffers` no journal a cada vblank em que pulou a cópia, ~90 linhas por segundo enquanto a captura roda. Não há como filtrar isso sem root (`LogFilterPatterns=` não vale para serviços de usuário). Se o log incomodar, desligue o **Freio da captura** no painel. O freio precisa do `python3-gi`; sem ele, a ponte usa o `gst-launch` e roda sem freio.
+**O freio.** A ponte segura cada quadro até completar 1/FPS (33 ms a 30 fps) antes de devolvê-lo. Sem buffer livre, o gamescope pula a cópia: em vez de ~100 por segundo, ele faz ~30.
 
-Desligado pelo botão, nada fica rodando.
+O efeito colateral é que o gamescope grava `pipewire: warning: out of buffers` no journal a cada vblank em que pulou a cópia. Medido:
 
-## Arquivos
+| Situação | Linhas por segundo | Volume no disco |
+| --- | --- | --- |
+| Jogo rodando | ~90 | ~2,4 MB/min (~140 MB/h) |
+| Só a tela do Steam | ~3 | desprezível |
 
-- Configuração: `~/.config/hyperhdr-decky.env` (editada pelo plugin; dá para ajustar `HYPERHDR_BIN`, `HYPERHDR_BOX`, `FLATBUFFERS_PRIORITY`, `V4L2_DEVICE`)
-- Serviços: `~/.config/systemd/user/decky-hyperhdr.service` e `decky-hyperhdr-bridge.service`
-- Logs: `journalctl --user -u decky-hyperhdr -u decky-hyperhdr-bridge`
+- **Disco:** não enche. O journald apaga os registros mais antigos ao chegar no teto.
+- **SSD e CPU:** desgaste e uso desprezíveis.
+- **Histórico de logs:** este é o efeito real. O Bazzite limita o journal a 50 MB (`SystemMaxUse=50M`), então ~20 min de jogo substituem todo o histórico anterior.
+
+Se você precisa de logs antigos, aumente o teto (exemplo: `SystemMaxUse=500M` em `/etc/systemd/journald.conf.d/`) ou desligue o **Freio da captura**. Não dá para filtrar a mensagem sem root, porque `LogFilterPatterns=` não vale para serviços de usuário.
 
 ## Problemas conhecidos
 
-- **O gamescope pode travar ao desligar a captura com um jogo aberto.** Se a captura desconecta no meio da cópia de um quadro, o gamescope 3.16.x pode fechar com SIGSEGV, levando o jogo junto. Foi visto 1 vez em ~10 desligamentos. Quando o `python3-gi` (bindings do GStreamer) está disponível, a ponte pausa o stream e espera antes de desconectar, para reduzir esse risco. Mesmo assim, **prefira ligar/desligar fora dos jogos**. Trocar a qualidade ou o método de captura também reinicia a ponte.
-- **Nunca force formato no nó `gamescope`.** Se um consumidor pedir um formato que o gamescope recusa (ex.: `pipewiresrc ! video/x-raw,format=NV12`), o PipeWire do gamescope encerra e o nó só volta depois de reiniciar a sessão. A ponte não restringe o formato. Reportado em [OpenGamingCollective/gamescope#27](https://github.com/OpenGamingCollective/gamescope/issues/27).
-- **v4l2loopback no Bazzite/Fedora Atomic:** o módulo é carregado no initramfs, que não lê `/etc/modprobe.d`. O `setup-v4l2loopback.sh` vale até o próximo boot. Para persistir, use argumentos do kernel: `rpm-ostree kargs --append-if-missing='v4l2loopback.devices=2' --append-if-missing='v4l2loopback.video_nr=0,50' --append-if-missing='v4l2loopback.exclusive_caps=1,1' --append-if-missing='v4l2loopback.card_label=OBS Virtual Camera,GamescopeCapture'`. Ou simplesmente use o modo Flatbuffers.
-- **Log do gamescope com o freio ligado:** ~90 linhas/s de `out of buffers` no journal enquanto captura (veja *Desempenho*).
+- **O gamescope pode travar ao desligar a captura com um jogo aberto.** No gamescope 3.16.x, desconectar um consumidor do nó PipeWire no meio da cópia de um quadro causou um SIGSEGV: uma vez em ~10 desligamentos, com um jogo pesado em 4K, e o jogo fechou junto.
+  - Desde a v0.2.1 a ponte **pausa o stream e espera 300 ms antes de desconectar**. Depois disso foram 0 travamentos em 50 ciclos de teste, 20 deles com o jogo aberto. Isso não é prova.
+  - **Prefira ligar e desligar fora dos jogos.** Mudar a qualidade, o método ou o freio também reinicia a ponte.
+- **Nunca force um formato no nó `gamescope`.** Se um consumidor pede um formato que o gamescope recusa (exemplo: `pipewiresrc ! video/x-raw,format=NV12`), o PipeWire do gamescope encerra e o nó só volta quando a sessão reinicia. A ponte nunca restringe o formato. Reportado em [OpenGamingCollective/gamescope#27](https://github.com/OpenGamingCollective/gamescope/issues/27).
+- **Logo depois de desconectar, o nó demora um pouco.** Por alguns segundos, uma nova conexão pode receber `target not found`. A ponte tenta de novo sozinha.
+- **v4l2loopback no Bazzite e no Fedora Atomic.** O módulo é carregado pelo initramfs, que não lê `/etc/modprobe.d`, então o `setup-v4l2loopback.sh` vale só até o próximo boot. Para persistir, use argumentos de kernel:
+  ```bash
+  sudo rpm-ostree kargs --append-if-missing=v4l2loopback.devices=2 \
+    --append-if-missing=v4l2loopback.video_nr=0,50 \
+    --append-if-missing=v4l2loopback.exclusive_caps=1,1 \
+    '--append-if-missing=v4l2loopback.card_label=OBS Virtual Camera,GamescopeCapture'
+  ```
+  A alternativa é usar o modo Flatbuffers, que não precisa do módulo.
+- **HDR:** com jogos em HDR, ajuste o tone mapping no HyperHDR.
 
-## Problemas comuns
+## Solução de problemas
 
-- **Captura "Rodando" mas sem LEDs:** confira na web UI (porta 8090) se a prioridade 150 "Decky gamescope" aparece. Ela só aparece em Game Mode, porque fora dele não existe o nó `gamescope`.
-- **"HyperHDR não encontrado":** use **Instalar HyperHDR portátil** ou defina `HYPERHDR_BIN` no arquivo de configuração.
-- **LEDs via USB/serial no modo nativo:** o seu usuário precisa ter acesso à porta serial (grupo `uucp`/`dialout`, conforme a distro).
-- **HDR:** com jogos em HDR, ajuste o tone mapping do HyperHDR.
+| Sintoma | O que verificar |
+| --- | --- |
+| Captura "Rodando", mas os LEDs não reagem | Na Web UI do HyperHDR, a prioridade **150 "Decky gamescope"** deve aparecer. Ela só aparece no Game Mode, com o nó `gamescope` ativo. |
+| "HyperHDR (não encontrado)" | Use **Instalar HyperHDR portátil**, escolha o modo certo ou defina `HYPERHDR_BIN` / `HYPERHDR_BOX`. |
+| Captura reinicia sem parar | Veja `journalctl --user -u decky-hyperhdr-bridge`. No modo v4l2, o `/dev/video50` provavelmente sumiu depois do reboot (veja [Problemas conhecidos](#problemas-conhecidos)). |
+| Captura parou de funcionar e não volta | Talvez algum programa tenha derrubado o PipeWire do gamescope (`pipewire: exiting` no journal). Troque para o Desktop e volte ao Game Mode. |
+| Toast "API do HyperHDR não respondeu" | Confirme se o HyperHDR está rodando e se a Web UI abre na porta 8090. |
+| LEDs USB não acendem no modo nativo | Permissão da porta serial: adicione o usuário ao grupo `uucp` ou `dialout`. |
 
-## Status
+## Desinstalação
 
-Testado no Bazzite (Fedora 44, KDE + Game Mode, gamescope 3.16.31), com HyperHDR 22 em distrobox, nos dois métodos de captura. Ainda **não foi testado no SteamOS** do Steam Deck. Relatos são bem-vindos nas issues.
+Remova o plugin pelo Decky (Configurações → Plugins → HyperHDR Toggle → Desinstalar). Ele para e desabilita os serviços e apaga as units.
+
+Arquivos que ficam, para remover à mão se quiser:
+
+```bash
+rm -f ~/.config/hyperhdr-decky.env
+rm -rf ~/.local/share/hyperhdr-portable          # se instalou o portátil
+sudo rm -f /etc/modprobe.d/99-hyperhdr-loopback.conf /etc/modules-load.d/99-hyperhdr-loopback.conf  # se usou o v4l2
+```
+
+A configuração do HyperHDR (`~/.hyperhdr`) não é tocada.
+
+## Desenvolvimento
+
+```
+.
+├── src/index.tsx                              # painel (React, @decky/ui)
+├── main.py                                    # backend do Decky: serviços, configuração, detecção, instalação do portátil
+├── defaults/scripts/                          # vão para scripts/ no pacote
+│   ├── hyperhdr-launch.sh                     # detecta e inicia/para o HyperHDR
+│   ├── hyperhdr-gamescope-bridge.sh           # ponto de entrada da ponte (escolhe Python ou gst-launch)
+│   ├── hyperhdr-gamescope-bridge.py           # ponte GStreamer com freio e desligamento suave
+│   ├── hyperhdr-flatbuffers-sender.py         # cliente Flatbuffers do HyperHDR
+│   └── setup-v4l2loopback.sh                  # opcional, root
+├── py_modules/flatbuffers/                    # biblioteca FlatBuffers (Apache-2.0), embutida
+├── package.sh                                 # gera out/hyperhdr-toggle.zip
+└── .github/workflows/release.yml              # tag v* → build e release com o zip
+```
+
+Build local (Node 20 e pnpm 9):
+
+```bash
+pnpm install
+./package.sh            # gera out/hyperhdr-toggle.zip
+```
+
+Para publicar, crie uma tag `vX.Y.Z`. O GitHub Actions gera o zip e cria a release.
+
+Para testar no aparelho sem reinstalar: copie os arquivos para `~/homebrew/plugins/hyperhdr-toggle/` e rode `sudo systemctl restart plugin_loader`. Isso é obrigatório para `main.py` e `dist/index.js`; os scripts valem no próximo início da captura.
+
+**Protocolo usado com o HyperHDR:** cada mensagem tem 4 bytes de tamanho (big-endian) seguidos de um `hyperhdrnet.Request` ([`hyperhdr_request.fbs`](https://github.com/awawa-dev/HyperHDR/blob/master/include/flatbuffers/parser/hyperhdr_request.fbs)). A ponte envia um `Register` com origem "Decky gamescope" e depois um `Image` com `RawImage` RGB24 por quadro. Com a tela parada, ela reenvia o último quadro a cada 1 s.
+
+## Status e créditos
+
+- **Testado:** Bazzite 44 (KDE + Game Mode, gamescope 3.16.31-ogc1), HyperHDR 22 em distrobox, nos dois métodos de captura. O modo portátil foi testado fora do Decky (Arch e Bazzite).
+- **Não testado:** SteamOS no Steam Deck e outras distros. Relatos são bem-vindos nas [issues](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues).
+- **Loja do Decky:** ainda não enviado. O formulário da loja exige declarar que a maior parte do código não foi escrita por IA generativa e que o plugin foi testado no SteamOS Stable e Beta. Nenhuma das duas condições se aplica hoje, porque este projeto foi desenvolvido com a ajuda de um assistente de IA (Claude) e só foi testado no Bazzite. Enquanto isso, a instalação é pela release.
+
+**Licenças:**
+
+- Este plugin: [BSD-3-Clause](LICENSE), baseado no [decky-plugin-template](https://github.com/SteamDeckHomebrew/decky-plugin-template)
+- `py_modules/flatbuffers`: [FlatBuffers](https://github.com/google/flatbuffers), Apache-2.0 ([licença](py_modules/flatbuffers/LICENSE))
+- Esquema `hyperhdr_request.fbs`: [HyperHDR](https://github.com/awawa-dev/HyperHDR), MIT
 
 ---
 
 ## English
 
-Decky Loader plugin that toggles [HyperHDR](https://github.com/awawa-dev/HyperHDR) ambient lighting **from Steam Game Mode**. HyperHDR's Linux screen grabber needs `xdg-desktop-portal`, which gamescope doesn't provide. This plugin reads gamescope's own PipeWire node (`gamescope`) with GStreamer, downscales it, and feeds it to HyperHDR through:
+**HyperHDR Toggle** is a Decky Loader plugin that brings [HyperHDR](https://github.com/awawa-dev/HyperHDR) ambient lighting to **Steam Game Mode**.
 
-- **Flatbuffers** (default): TCP 19400, priority 150. No root, no kernel module, no HyperHDR config changes.
-- **v4l2loopback** (optional): `/dev/video50` used by HyperHDR's video grabber. Run `scripts/setup-v4l2loopback.sh` once as root.
+**Why:** HyperHDR's Linux screen grabber needs `xdg-desktop-portal`, which gamescope doesn't implement, so there is no picture in Game Mode. gamescope does publish its composited output as a PipeWire node named `gamescope`. This plugin reads that node with GStreamer, downscales it, and feeds HyperHDR.
 
-HyperHDR can be **native**, a **portable** build the plugin downloads from the official releases (no root, good for SteamOS), inside **distrobox**, or on **another machine** (only the capture runs locally).
+**Features**
 
-**Install:** download `hyperhdr-toggle.zip` from the [latest release](https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest), enable Decky developer mode, then use *Install plugin from ZIP*.
+- Quick-access toggle for the capture and HyperHDR
+- HyperHDR can run **native**, **portable** (downloaded by the plugin from the official releases, no root), in **distrobox**, or on **another machine**
+- Capture via **Flatbuffers** (default: TCP 19400, priority 150, no root or kernel module) or **v4l2loopback** (`/dev/video50`)
+- **Capture throttle** (default on): FPS loss ~1.6% instead of ~5.3%
+- **Graceful shutdown**: pauses the stream before disconnecting
+- Toggles for the LED output and forwarder, autostart, and quality presets
 
-**Requirements:** gamescope session, `gst-launch-1.0` with `pipewiresrc`, `python3`, `pw-cli`.
+**Install**
 
-**Cost:** gamescope renders a full-resolution copy every vblank for any PipeWire consumer. In Crimson Desert at 4K that cost ~5.3% FPS. The bridge's **capture throttle** (on by default) holds each buffer for 1/FPS, so gamescope skips most copies. With it the loss is ~1.6% and the bridge uses ~3% of one core. The side effect is that gamescope logs `out of buffers` ~90×/s while capturing, which you can turn off in the panel. Nothing runs while it is off.
+1. Enable Decky's developer mode (Settings → General).
+2. Go to Developer → *Install plugin from URL* and paste:
+   ```
+   https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest/download/hyperhdr-toggle.zip
+   ```
+3. Open the quick access menu (…) → **HyperHDR**.
 
-**Known issues:** gamescope 3.16.x may SIGSEGV when the capture disconnects mid-copy (seen once in ~10 stops), so prefer toggling outside games. The bridge pauses the stream before disconnecting when `python3-gi` is available. Never force a format on the `gamescope` node: a rejected negotiation kills gamescope's PipeWire until the session restarts.
+**Setup**
 
-**Status:** tested on Bazzite only; SteamOS reports welcome.
+- **HyperHDR in distrobox:** leave *Auto*. The plugin finds a container named `hyperhdr-box`, or any container with "hyperhdr" in its name.
+- **No HyperHDR installed (e.g. SteamOS):** pick *Native / portable*, tap *Install portable HyperHDR*, start it, then configure your LEDs in the web UI on port 8090.
+- **HyperHDR on another machine:** pick *Other computer* and enter `host:19400`.
+- **Optional v4l2loopback:** run `sudo bash scripts/setup-v4l2loopback.sh`, then enable Video capture on `/dev/video50` in HyperHDR. On Fedora Atomic/Bazzite the options only persist through `rpm-ostree kargs`.
 
-## Licenças / Licenses
+**Requirements:** gamescope session, `gst-launch-1.0` with `pipewiresrc`, `python3`, `pw-cli`. `python3-gi` is recommended; without it there is no throttle and no graceful shutdown.
 
-- Este plugin: BSD-3-Clause (baseado no [decky-plugin-template](https://github.com/SteamDeckHomebrew/decky-plugin-template))
-- `py_modules/flatbuffers`: [FlatBuffers](https://github.com/google/flatbuffers), Apache-2.0 (`py_modules/flatbuffers/LICENSE`)
-- O esquema `hyperhdr_request.fbs` vem do [HyperHDR](https://github.com/awawa-dev/HyperHDR) (MIT)
+**Performance** (Crimson Desert 4K, MangoHud):
+
+| | FPS | CPU (bridge) |
+| --- | --- | --- |
+| Capture off | 105.8 | — |
+| Throttle on | 104.2 (−1.6%) | ~3.2% of a core |
+| Throttle off | 100.2 (−5.3%) | ~9.4% |
+
+The FPS cost comes from gamescope rendering a full-resolution copy for every PipeWire consumer. The throttle holds buffers so gamescope skips most copies. The side effect is that gamescope logs `out of buffers` ~90×/s while you play (~140 MB/h of journal). That doesn't harm the system, but it shortens journal history on systems with a small `SystemMaxUse`.
+
+**Known issues**
+
+- gamescope 3.16.x once crashed (SIGSEGV) when the capture disconnected mid-copy during a heavy game. Since the graceful shutdown: 0 crashes in 50 test cycles. Still, prefer toggling outside games.
+- Never force a pixel format on the `gamescope` node. A rejected negotiation kills gamescope's PipeWire until the session restarts ([OpenGamingCollective/gamescope#27](https://github.com/OpenGamingCollective/gamescope/issues/27)).
+
+**Status:** tested on Bazzite only. SteamOS reports are welcome. Developed with the help of an AI assistant (Claude), so it is not submitted to the Decky store.
+
+**Licenses:** BSD-3-Clause (plugin), Apache-2.0 (bundled FlatBuffers), MIT (HyperHDR schema).
