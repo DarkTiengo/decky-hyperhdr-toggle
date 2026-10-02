@@ -67,21 +67,77 @@ O gamescope, porém, publica a imagem já composta da tela como um **nó PipeWir
 
 ## Requisitos
 
-| Item | Observação |
-| --- | --- |
-| [Decky Loader](https://decky.xyz) | v3 ou mais novo |
-| Sessão gamescope do Steam | SteamOS, Bazzite, ChimeraOS, Nobara Deck Edition, etc. |
-| GStreamer | `gst-launch-1.0` com `pipewiresrc`, `videorate`, `videoscale` e `videoconvert` |
-| `python3`, `pw-cli` | Já vêm nessas distros |
-| `python3-gi` (bindings do GStreamer) | **Recomendado.** Habilita o freio e o desligamento suave. Sem ele, a ponte usa o `gst-launch` sem essas proteções. |
-| HyperHDR | Qualquer versão com servidor Flatbuffers (habilitado por padrão). Testado com a v22. |
-| *Só para o modo v4l2:* | módulo `v4l2loopback` e `v4l2-ctl` |
+### O que precisa estar instalado
 
-Para conferir no terminal (Konsole no Desktop, ou SSH):
+| Componente | Para quê | Obrigatório? |
+| --- | --- | --- |
+| [Decky Loader](https://decky.xyz) v3+ | Roda o plugin no Game Mode | **Sim** |
+| Sessão gamescope do Steam | É de onde vem a imagem (SteamOS, Bazzite, ChimeraOS…) | **Sim** |
+| GStreamer + plugin PipeWire (`gst-launch-1.0`, `pipewiresrc`, `videoscale`, `videoconvert`, `videorate`) | Captura a tela do gamescope | **Sim** |
+| `python3` | Ponte de captura e cliente Flatbuffers | **Sim** |
+| `pw-cli` (utilitários do PipeWire) | Detecta quando o gamescope está ativo | **Sim** |
+| Bindings do GStreamer para Python (`python3-gi` + typelib `Gst-1.0`) | Freio da captura e desligamento suave | Muito recomendado |
+| [HyperHDR](https://github.com/awawa-dev/HyperHDR) | Processa a imagem e controla os LEDs | **Sim**, mas o plugin pode baixar a versão portátil sozinho, ou ele pode rodar em outro computador |
+| `curl` | Baixar o HyperHDR portátil | Só se usar o portátil |
+| [distrobox](https://distrobox.it) | Rodar o HyperHDR dentro de um container | Só no cenário distrobox |
+| [OpenRGB](https://openrgb.org) 0.9+ e as [regras udev](https://openrgb.org/udev) | Luzes RGB do PC | Só para as [luzes do PC](#luzes-do-pc-openrgb) |
+| `ss` (iproute2), `flatpak` | Servidor do OpenRGB | Só para as luzes do PC |
+| Módulo `v4l2loopback` + `v4l2-ctl` (v4l-utils) | Método de captura v4l2loopback | Só se não usar o Flatbuffers (o padrão) |
+
+### Pacotes por distribuição
+
+| | Bazzite / Fedora | Arch / CachyOS | Debian / Ubuntu |
+| --- | --- | --- | --- |
+| GStreamer | `gstreamer1` | `gstreamer` | `gstreamer1.0-tools` |
+| Elementos básicos | `gstreamer1-plugins-base` | `gst-plugins-base` | `gstreamer1.0-plugins-base` |
+| Plugin PipeWire | `pipewire-gstreamer` | `gst-plugin-pipewire` | `gstreamer1.0-pipewire` |
+| `pw-cli` | `pipewire-utils` | `pipewire` | `pipewire-bin` |
+| Python + GStreamer | `python3-gobject-base` | `python-gobject` | `python3-gi` + `gir1.2-gstreamer-1.0` |
+| `ss` | `iproute` | `iproute2` | `iproute2` |
+| `curl` | `curl` | `curl` | `curl` |
+| `v4l2-ctl` (opcional) | `v4l-utils` | `v4l-utils` | `v4l-utils` |
+| distrobox (opcional) | `distrobox` | `distrobox` | `distrobox` |
+
+**Bazzite:** tudo isso já vem na imagem (conferido no Bazzite 44), inclusive o distrobox e as regras udev do OpenRGB. Não precisa instalar nada além do Decky e, se quiser as luzes do PC, do OpenRGB.
+
+**Fedora (não atômico):**
+```bash
+sudo dnf install gstreamer1 gstreamer1-plugins-base pipewire-gstreamer pipewire-utils python3-gobject-base iproute curl
+```
+
+**Arch / CachyOS:**
+```bash
+sudo pacman -S --needed gstreamer gst-plugins-base gst-plugin-pipewire pipewire python-gobject iproute2 curl
+```
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-pipewire pipewire-bin python3-gi gir1.2-gstreamer-1.0 iproute2 curl
+```
+
+**SteamOS (Steam Deck): não verificado.** O sistema é somente leitura e ainda não sabemos se ele traz o `pipewiresrc` e o `python3-gi`. Instalar pacotes com `steamos-readonly disable` + `pacman` funciona, mas é apagado a cada atualização do SteamOS. Se você tem um Steam Deck, rode a checagem abaixo e conte o resultado na [issue #1](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues/1).
+
+**OpenRGB (opcional, para as luzes do PC):**
+```bash
+flatpak install flathub org.openrgb.OpenRGB
+```
+Também instale as [regras udev](https://openrgb.org/udev), que já vêm no Bazzite, e confira se os seus dispositivos aparecem:
+```bash
+flatpak run --command=openrgb org.openrgb.OpenRGB --list-devices
+```
+
+### Checagem rápida
+
+Rode no terminal (Konsole no Desktop, ou SSH). Cada linha deve dizer `OK`:
 
 ```bash
-gst-inspect-1.0 pipewiresrc >/dev/null && echo "pipewiresrc OK"
-python3 -c 'import gi; gi.require_version("Gst","1.0")' && echo "python3-gi OK"
+for c in gst-launch-1.0 python3 pw-cli; do command -v $c >/dev/null && echo "$c OK" || echo "$c FALTANDO"; done
+for e in pipewiresrc videoscale videoconvert videorate; do gst-inspect-1.0 $e >/dev/null 2>&1 && echo "$e OK" || echo "$e FALTANDO"; done
+python3 -c 'import gi; gi.require_version("Gst","1.0"); from gi.repository import Gst' 2>/dev/null && echo "python3-gi OK" || echo "python3-gi FALTANDO (sem freio e sem desligamento suave)"
+# opcionais
+command -v curl >/dev/null && echo "curl OK (HyperHDR portátil)"
+command -v distrobox >/dev/null && echo "distrobox OK"
+flatpak info org.openrgb.OpenRGB >/dev/null 2>&1 && echo "OpenRGB OK (luzes do PC)"
 ```
 
 ## Instalação
@@ -431,7 +487,13 @@ Para testar no aparelho sem reinstalar: copie os arquivos para `~/homebrew/plugi
 - **HyperHDR on another machine:** pick *Other computer* and enter `host:19400`.
 - **Optional v4l2loopback:** run `sudo bash scripts/setup-v4l2loopback.sh`, then enable Video capture on `/dev/video50` in HyperHDR. On Fedora Atomic/Bazzite the options only persist through `rpm-ostree kargs`.
 
-**Requirements:** gamescope session, `gst-launch-1.0` with `pipewiresrc`, `python3`, `pw-cli`. `python3-gi` is recommended; without it there is no throttle and no graceful shutdown.
+**Requirements:** Decky Loader, a gamescope session, GStreamer with the PipeWire plugin, `python3`, `pw-cli`, and (recommended) the GStreamer Python bindings. Packages:
+- Bazzite: everything is preinstalled.
+- Fedora: `gstreamer1 gstreamer1-plugins-base pipewire-gstreamer pipewire-utils python3-gobject-base`
+- Arch: `gstreamer gst-plugins-base gst-plugin-pipewire pipewire python-gobject`
+- Debian/Ubuntu: `gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-pipewire pipewire-bin python3-gi gir1.2-gstreamer-1.0`
+
+Optional: `curl` (portable HyperHDR), `distrobox`, OpenRGB (`flatpak install flathub org.openrgb.OpenRGB`) for the PC lights, and `v4l-utils` + `v4l2loopback` for the v4l2 capture mode. SteamOS hasn't been checked yet. See the full table and a one-shot check script in [Requisitos](#requisitos).
 
 **Performance** (Crimson Desert 4K, MangoHud):
 
