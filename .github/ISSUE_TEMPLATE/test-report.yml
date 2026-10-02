@@ -1,0 +1,96 @@
+name: Relato de teste / Test report
+description: Testou o plugin num sistema ou aparelho? Conte como foi. / Tested the plugin on a system or device? Tell us how it went.
+title: "[Teste] <sistema> — <aparelho>"
+labels: ["test report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por testar! Pode escrever em português ou inglês. O roteiro está na issue fixada "Testers wanted".
+        Thanks for testing! Portuguese or English are both fine. The test plan is in the pinned "Testers wanted" issue.
+
+  - type: input
+    id: system
+    attributes:
+      label: Sistema e versão / OS and version
+      description: "Ex.: SteamOS 3.7 Stable, Bazzite 44, ChimeraOS 47 (`cat /etc/os-release`)"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Aparelho, CPU e GPU / Device, CPU and GPU
+      description: "Ex.: Steam Deck OLED; PC Ryzen 7 + RX 9070 XT"
+    validations:
+      required: true
+
+  - type: input
+    id: gamescope
+    attributes:
+      label: Versão do gamescope / gamescope version
+      description: "`gamescope --version`"
+
+  - type: dropdown
+    id: deps
+    attributes:
+      label: Dependências / Dependencies
+      description: "`gst-inspect-1.0 pipewiresrc` e `python3 -c 'import gi; gi.require_version(\"Gst\",\"1.0\")'`"
+      multiple: true
+      options:
+        - pipewiresrc OK
+        - pipewiresrc faltando / missing
+        - python3-gi OK
+        - python3-gi faltando / missing
+
+  - type: dropdown
+    id: hyperhdr
+    attributes:
+      label: Onde está o HyperHDR / Where HyperHDR runs
+      options:
+        - Portátil (instalado pelo plugin) / Portable (installed by the plugin)
+        - Pacote do sistema / System package
+        - Distrobox
+        - Outro computador / Another machine
+    validations:
+      required: true
+
+  - type: dropdown
+    id: capture
+    attributes:
+      label: Método de captura / Capture method
+      options:
+        - Flatbuffers
+        - v4l2loopback
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: results
+    attributes:
+      label: O que funcionou / What worked
+      description: Marque o que você testou e funcionou. / Tick what you tested and worked.
+      options:
+        - label: Plugin instalou e aparece no menu rápido / Plugin installs and shows in quick access
+        - label: "\"Instalar HyperHDR portátil\" funcionou / \"Install portable HyperHDR\" worked"
+        - label: Ligar a captura no Game Mode com um jogo aberto / Turning capture on in Game Mode with a game running
+        - label: LEDs acompanham o jogo / LEDs follow the game
+        - label: Desligar a captura sem travar o gamescope / Turning capture off without crashing gamescope
+        - label: Trocar para o Desktop e voltar ao Game Mode / Switching to Desktop and back to Game Mode
+        - label: "\"Iniciar com o sistema\" depois de reiniciar / \"Start with the system\" after a reboot"
+        - label: Freio da captura ligado e desligado / Capture throttle on and off
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Problemas e observações / Problems and notes
+      description: O que não funcionou, mensagens de erro, FPS com e sem a captura (se mediu). / What failed, error messages, FPS with and without capture (if measured).
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        `journalctl --user -u decky-hyperhdr-bridge -u decky-hyperhdr -b --no-pager | tail -100`
+        Se o gamescope travou / if gamescope crashed: `journalctl --user -b --no-pager | grep -iE "gamescope.*pipewire|segfault" | tail -30`
+      render: text
