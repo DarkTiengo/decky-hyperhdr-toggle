@@ -1,0 +1,16 @@
+{
+  "name": "HyperHDR Toggle",
+  "author": "Rafael Tiengo",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "hyperhdr",
+      "leds",
+      "ambilight",
+      "gamescope"
+    ],
+    "description": "Turn HyperHDR ambient lighting on/off in Game Mode, capturing the gamescope output via PipeWire.",
+    "image": "https://opengraph.githubassets.com/1/DarkTiengo/decky-hyperhdr-toggle"
+  }
+}
