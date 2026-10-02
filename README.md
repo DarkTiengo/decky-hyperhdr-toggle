@@ -65,13 +65,20 @@ Medido no Bazzite, em Game Mode a 3840x2160, com captura reduzida para 320x180 a
 | Emissor Flatbuffers | ~0,5% |
 | HyperHDR | ~1–2,4% |
 
-Desligado pelo botão, nada fica rodando. Se precisar de menos, use a qualidade **Econômico**.
+No FPS do jogo, o custo vem do gamescope, não destes processos. No Crimson Desert em 4K (MangoHud, 3 rodadas A-B-A de 30 s), a média caiu de 105,5 para ~99,7 fps (−5,5%) com a captura ligada. A qualidade escolhida no plugin não muda isso, porque o gamescope sempre copia a tela em resolução cheia. Desligado pelo botão, nada fica rodando.
 
 ## Arquivos
 
 - Configuração: `~/.config/hyperhdr-decky.env` (editada pelo plugin; dá para ajustar `HYPERHDR_BIN`, `HYPERHDR_BOX`, `FLATBUFFERS_PRIORITY`, `V4L2_DEVICE`)
 - Serviços: `~/.config/systemd/user/decky-hyperhdr.service` e `decky-hyperhdr-bridge.service`
 - Logs: `journalctl --user -u decky-hyperhdr -u decky-hyperhdr-bridge`
+
+## Problemas conhecidos
+
+- **O gamescope pode travar ao desligar a captura com um jogo aberto.** Se a captura desconecta no meio da cópia de um quadro, o gamescope 3.16.x pode fechar com SIGSEGV, levando o jogo junto. Foi visto 1 vez em ~10 desligamentos. Quando o `python3-gi` (bindings do GStreamer) está disponível, a ponte pausa o stream e espera antes de desconectar, para reduzir esse risco. Mesmo assim, **prefira ligar/desligar fora dos jogos**. Trocar a qualidade ou o método de captura também reinicia a ponte.
+- **Nunca force formato no nó `gamescope`.** Se um consumidor pedir um formato que o gamescope recusa (ex.: `pipewiresrc ! video/x-raw,format=NV12`), o PipeWire do gamescope encerra e o nó só volta depois de reiniciar a sessão. A ponte não restringe o formato.
+- **v4l2loopback no Bazzite/Fedora Atomic:** o módulo é carregado no initramfs, que não lê `/etc/modprobe.d`. O `setup-v4l2loopback.sh` vale até o próximo boot. Para persistir, use argumentos do kernel: `rpm-ostree kargs --append-if-missing='v4l2loopback.devices=2' --append-if-missing='v4l2loopback.video_nr=0,50' --append-if-missing='v4l2loopback.exclusive_caps=1,1' --append-if-missing='v4l2loopback.card_label=OBS Virtual Camera,GamescopeCapture'`. Ou simplesmente use o modo Flatbuffers.
+- **Custo no FPS:** enquanto alguém consome o nó, o gamescope renderiza uma cópia da tela inteira a cada vblank e espera a GPU terminar. No Crimson Desert em 4K isso custou ~5–6% de FPS médio (105,5 → 99,7). O próprio HyperHDR não teve custo mensurável.
 
 ## Problemas comuns
 
@@ -82,7 +89,7 @@ Desligado pelo botão, nada fica rodando. Se precisar de menos, use a qualidade 
 
 ## Status
 
-Testado no Bazzite (Fedora 44, KDE + Game Mode), com HyperHDR 22 em distrobox, nos dois métodos de captura. Ainda **não foi testado no SteamOS** do Steam Deck. Relatos são bem-vindos nas issues.
+Testado no Bazzite (Fedora 44, KDE + Game Mode, gamescope 3.16.31), com HyperHDR 22 em distrobox, nos dois métodos de captura. Ainda **não foi testado no SteamOS** do Steam Deck. Relatos são bem-vindos nas issues.
 
 ---
 
@@ -99,7 +106,9 @@ HyperHDR can be **native**, a **portable** build the plugin downloads from the o
 
 **Requirements:** gamescope session, `gst-launch-1.0` with `pipewiresrc`, `python3`, `pw-cli`.
 
-**Cost:** about 3–5% of a single CPU core in total at 320x180@30 (measured at 4K output). Nothing runs while it is off.
+**Cost:** about 3–5% of a single CPU core at 320x180@30. Game FPS drops ~5–6% while capturing (Crimson Desert, 4K): gamescope renders a full-resolution copy every vblank for any PipeWire consumer. Nothing runs while it is off.
+
+**Known issues:** gamescope 3.16.x may SIGSEGV when the capture disconnects mid-copy (seen once in ~10 stops), so prefer toggling outside games. The bridge pauses the stream before disconnecting when `python3-gi` is available. Never force a format on the `gamescope` node: a rejected negotiation kills gamescope's PipeWire until the session restarts.
 
 **Status:** tested on Bazzite only; SteamOS reports welcome.
 

@@ -15,6 +15,14 @@ until pw-cli ls Node 2>/dev/null | grep -q 'node.name = "gamescope"'; do
 done
 echo "gamescope encontrado, modo $MODE ${WIDTH}x${HEIGHT}@${FPS}"
 
+# Com as bindings do GStreamer para Python, usa a ponte com desligamento suave
+# (pausa o stream antes de desconectar; evita um SIGSEGV do gamescope)
+if [[ "${BRIDGE_IMPL:-auto}" != "gst-launch" ]] && python3 -c 'import gi; gi.require_version("Gst", "1.0")' 2>/dev/null; then
+    [[ "$MODE" == "v4l2" && ! -e "${V4L2_DEVICE:-/dev/video50}" ]] && { echo "${V4L2_DEVICE:-/dev/video50} não existe (veja scripts/setup-v4l2loopback.sh)" >&2; exit 1; }
+    exec python3 "$HERE/hyperhdr-gamescope-bridge.py"
+fi
+echo "python3-gi indisponível: usando gst-launch (sem desligamento suave)" >&2
+
 # videorate antes de escalar/converter para descartar quadros o mais cedo possível
 SRC=(pipewiresrc target-object=gamescope do-timestamp=true
      ! videorate drop-only=true max-rate="$FPS"

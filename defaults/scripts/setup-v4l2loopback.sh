@@ -24,4 +24,11 @@ if [[ ! -e /dev/video50 ]]; then
     fi
 fi
 ls -l /dev/video50 2>/dev/null || true
+if command -v rpm-ostree >/dev/null 2>&1; then
+    # Em sistemas atômicos o módulo carrega no initramfs, que não lê /etc/modprobe.d
+    echo "AVISO: em sistemas rpm-ostree (Bazzite, Fedora Atomic) esta config não vale depois do reboot."
+    echo "Para persistir, use argumentos do kernel:"
+    echo "  sudo rpm-ostree kargs --append-if-missing=v4l2loopback.devices=2 --append-if-missing=v4l2loopback.video_nr=0,50 \\"
+    echo "       --append-if-missing=v4l2loopback.exclusive_caps=1,1 '--append-if-missing=v4l2loopback.card_label=OBS Virtual Camera,GamescopeCapture'"
+fi
 echo "No HyperHDR ative Video capture em /dev/video50 e escolha 'v4l2loopback' no plugin."
