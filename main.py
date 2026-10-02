@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import json
 import os
 import platform
@@ -43,16 +44,41 @@ DEFAULTS = {
     "OPENRGB_HOST": "127.0.0.1",
     "OPENRGB_PORT": "6742",
     "OPENRGB_UDP_PORT": "19446",
+    "SETUP_DONE": "0",
 }
 CHOICES = {
     "HYPERHDR_MODE": {"auto", "native", "distrobox", "external"},
     "CAPTURE_MODE": {"flatbuffers", "v4l2"},
     "BRIDGE_THROTTLE": {"0", "1"},
     "OPENRGB_ENABLE": {"0", "1"},
+    "SETUP_DONE": {"0", "1"},
 }
 # Chaves que só afetam a parte do OpenRGB: mudam sem reiniciar a captura do gamescope
 OPENRGB_KEYS = {"OPENRGB_ENABLE", "OPENRGB_HOST", "OPENRGB_PORT", "OPENRGB_UDP_PORT"}
 DETECT_TTL = 30
+PC_INSTANCE_NAME = "PC RGB"
+HYPERHDR_DB = os.path.join(HOME, ".hyperhdr", "db", "hyperhdr.db")
+OPENRGB_STATUS = f"/run/user/{os.getuid()}/decky-hyperhdr-openrgb.json"
+# Sem cor nova por este tempo, o painel mostra "sem cores do HyperHDR"
+OPENRGB_STALE_S = 10
+# Cores do teste de LEDs: prioridade acima da captura (150) para aparecer mesmo com ela ligada
+TEST_COLORS = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+TEST_PRIORITY = 100
+
+# Pacote que fornece cada dependência, por família de distro (conferidos no Bazzite, Arch e Debian)
+PACKAGES = {
+    "gst-launch": {"fedora": "gstreamer1", "arch": "gstreamer", "debian": "gstreamer1.0-tools"},
+    "pipewiresrc": {"fedora": "pipewire-gstreamer", "arch": "gst-plugin-pipewire", "debian": "gstreamer1.0-pipewire"},
+    "gst-base": {"fedora": "gstreamer1-plugins-base", "arch": "gst-plugins-base", "debian": "gstreamer1.0-plugins-base"},
+    "python3": {"fedora": "python3", "arch": "python", "debian": "python3"},
+    "pw-cli": {"fedora": "pipewire-utils", "arch": "pipewire", "debian": "pipewire-bin"},
+    "python3-gi": {"fedora": "python3-gobject-base", "arch": "python-gobject", "debian": "python3-gi gir1.2-gstreamer-1.0"},
+    "curl": {"fedora": "curl", "arch": "curl", "debian": "curl"},
+    "distrobox": {"fedora": "distrobox", "arch": "distrobox", "debian": "distrobox"},
+    "openrgb": {"fedora": "flatpak: org.openrgb.OpenRGB", "arch": "flatpak: org.openrgb.OpenRGB",
+                "debian": "flatpak: org.openrgb.OpenRGB"},
+    "ss": {"fedora": "iproute", "arch": "iproute2", "debian": "iproute2"},
+}
 
 
 def _user_env() -> dict:
@@ -205,6 +231,62 @@ def _rpc(host: str, payload: dict, timeout: float = 1.5) -> dict | None:
         return None
 
 
+def _distro_family() -> str:
+    try:
+        info = {}
+        with open("/etc/os-release") as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                info[k] = v.strip('"').lower()
+        ids = " ".join([info.get("ID", ""), info.get("ID_LIKE", "")])
+    except OSError:
+        return ""
+    for family in ("fedora", "arch", "debian"):
+        if family in ids or (family == "debian" and "ubuntu" in ids):
+            return family
+    return ""
+
+
+def _load_script(name: str):
+    """Importa um módulo de scripts/ (os nomes têm hífen, então não dá para usar import normal)."""
+    path = os.path.join(SCRIPTS, name)
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_").removesuffix(".py"), path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _read_openrgb_status() -> dict | None:
+    try:
+        with open(OPENRGB_STATUS) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _send_test_colors(target: str, colors: list[tuple[int, int, int]], seconds: float) -> None:
+    """Mostra cada cor por alguns segundos pelo servidor Flatbuffers; ao fechar, a prioridade some."""
+    sender = _load_script("hyperhdr-flatbuffers-sender.py")
+    host, _, port = target.rpartition(":")
+    w, h = 64, 36
+    with socket.create_connection((host or "127.0.0.1", int(port)), timeout=3) as s:
+        s.sendall(sender.frame(sender.register_message("Decky teste de LEDs", TEST_PRIORITY)))
+        for r, g, b in colors:
+            msg = sender.frame(sender.image_message(bytes((r, g, b)) * (w * h), w, h))
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                s.sendall(msg)
+                time.sleep(0.2)
+
+
 def _local_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -298,7 +380,7 @@ class Plugin:
             "detail": detail,
             "hyperhdr": "external" if kind == "external" else states[HYPERHDR_UNIT],
             "bridge": states[BRIDGE_UNIT],
-            "openrgb": states[OPENRGB_UNIT] if cfg["OPENRGB_ENABLE"] == "1" else "disabled",
+            "openrgb": self._openrgb_state(cfg, states),
             "api": info is not None,
             "leds": components.get("LEDDEVICE"),
             "forwarding": components.get("FORWARDER"),
@@ -307,6 +389,21 @@ class Plugin:
             "v4l2_missing": cfg["CAPTURE_MODE"] == "v4l2" and not os.path.exists(cfg["V4L2_DEVICE"]),
             "portable": os.path.exists(os.path.join(PORTABLE_DIR, "bin", "hyperhdr")),
         }
+
+    def _openrgb_state(self, cfg: dict, states: dict) -> str:
+        if cfg["OPENRGB_ENABLE"] != "1":
+            return "disabled"
+        if states[OPENRGB_UNIT] != "active":
+            # As cores vêm do HyperHDR: sem a chave principal ligada não há o que sincronizar
+            return "waiting_main" if states[BRIDGE_UNIT] != "active" else states[OPENRGB_UNIT]
+        st = _read_openrgb_status() or {}
+        if st.get("state") == "no_server":
+            return "no_server"
+        if not st.get("devices"):
+            return "no_devices"
+        if time.time() - (st.get("last_packet") or 0) > OPENRGB_STALE_S:
+            return "no_data"
+        return "syncing"
 
     async def get_settings(self) -> dict:
         return _read_config()
@@ -431,6 +528,190 @@ class Plugin:
         await self._detect(force=True)
         decky.logger.info(f"HyperHDR portátil {release.get('tag_name')} instalado em {PORTABLE_DIR}")
         return {"ok": True, "version": release.get("tag_name")}
+
+    # ---------- Assistente de configuração ----------
+
+    async def check_dependencies(self) -> list[dict]:
+        _, out = await _run("/bin/bash", os.path.join(SCRIPTS, "check-deps.sh"))
+        family = _distro_family()
+        items = []
+        for line in out.splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            item["package"] = PACKAGES.get(item["id"], {}).get(family, "")
+            items.append(item)
+        return items
+
+    async def _wait_api(self, host: str, seconds: float) -> dict | None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            info = await asyncio.to_thread(_rpc, host, {"command": "sysinfo"})
+            if info and info.get("success"):
+                return info
+            await asyncio.sleep(1)
+        return None
+
+    async def test_hyperhdr(self) -> dict:
+        """Garante que o HyperHDR está no ar e testa a API (8090) e o Flatbuffers (19400)."""
+        cfg = _read_config()
+        kind, detail = await self._detect(force=True)
+        host = self._api_host(cfg)
+        result = {"kind": kind, "detail": detail, "host": host, "started": False, "api": False,
+                  "version": None, "flatbuffers": False, "instances": [], "error": None}
+        if kind == "missing":
+            result["error"] = "HyperHDR não encontrado. Instale o portátil ou escolha onde ele está."
+            return result
+        if kind != "external":
+            _, active = await _systemctl("is-active", HYPERHDR_UNIT)
+            if active != "active":
+                code, out = await _systemctl("start", HYPERHDR_UNIT)
+                if code != 0:
+                    result["error"] = f"não consegui iniciar o HyperHDR: {out[-200:]}"
+                    return result
+                result["started"] = True
+        info = await self._wait_api(host, 30 if result["started"] else 5)
+        if not info:
+            result["error"] = f"a API do HyperHDR não respondeu em http://{host}:8090"
+            return result
+        result["api"] = True
+        result["version"] = (info.get("info", {}).get("hyperhdr") or {}).get("version")
+        server = await asyncio.to_thread(_rpc, host, {"command": "serverinfo"})
+        if server and server.get("success"):
+            result["instances"] = [
+                {"index": i.get("instance"), "name": i.get("friendly_name"), "running": bool(i.get("running"))}
+                for i in server["info"].get("instance", [])
+            ]
+        fb_host, _, fb_port = cfg["FLATBUFFERS_TARGET"].rpartition(":")
+        result["flatbuffers"] = await asyncio.to_thread(_tcp_open, fb_host or "127.0.0.1", int(fb_port))
+        if not result["flatbuffers"]:
+            result["error"] = (f"o servidor Flatbuffers não respondeu em {cfg['FLATBUFFERS_TARGET']}. "
+                               "Ative-o na Web UI do HyperHDR (Network services).")
+        return result
+
+    async def test_leds(self) -> dict:
+        """Acende vermelho, verde e azul nos LEDs pelo HyperHDR, sem precisar do gamescope."""
+        target = _read_config()["FLATBUFFERS_TARGET"]
+        try:
+            await asyncio.to_thread(_send_test_colors, target, TEST_COLORS, 1.5)
+            return {"ok": True}
+        except OSError as e:
+            return {"ok": False, "error": f"não consegui enviar para {target}: {e}"}
+
+    async def openrgb_check(self) -> dict:
+        """Garante um servidor OpenRGB e lista os dispositivos."""
+        cfg = _read_config()
+        host, port = cfg["OPENRGB_HOST"], int(cfg["OPENRGB_PORT"])
+        result = {"installed": False, "started": False, "devices": [], "error": None}
+        deps = {d["id"]: d["ok"] for d in await self.check_dependencies()}
+        result["installed"] = deps.get("openrgb", False)
+        if not result["installed"] and host == "127.0.0.1":
+            result["error"] = "OpenRGB não encontrado. Instale: flatpak install flathub org.openrgb.OpenRGB"
+            return result
+        if not await asyncio.to_thread(_tcp_open, host, port, 1.0):
+            await _systemctl("start", OPENRGB_SERVER_UNIT)
+            result["started"] = True
+        sdk = _load_script("openrgb_sdk.py")
+        end = time.monotonic() + 40
+        last_error = "servidor não respondeu"
+        while time.monotonic() < end:
+            try:
+                client = await asyncio.to_thread(sdk.OpenRGBClient, host, port, "Decky HyperHDR (assistente)")
+                try:
+                    devices = await asyncio.to_thread(client.controllers)
+                finally:
+                    client.close()
+                if devices:
+                    result["devices"] = [{"name": d.name, "leds": d.num_leds} for d in devices]
+                    return result
+                last_error = "o OpenRGB não encontrou dispositivos"
+            except (OSError, ValueError) as e:
+                last_error = str(e)
+            await asyncio.sleep(2)
+        result["error"] = f"OpenRGB: {last_error}"
+        return result
+
+    async def pc_instance_status(self) -> dict:
+        cfg = _read_config()
+        kind, _ = await self._detect()
+        server = await asyncio.to_thread(_rpc, self._api_host(cfg), {"command": "serverinfo"})
+        instances = server["info"].get("instance", []) if server and server.get("success") else []
+        found = next((i for i in instances if i.get("friendly_name") == PC_INSTANCE_NAME), None)
+        return {
+            "exists": found is not None,
+            "running": bool(found and found.get("running")),
+            "can_create": kind in ("native", "distrobox") and os.path.exists(HYPERHDR_DB),
+            "external": kind == "external",
+            "ip": _local_ip(),
+            "udp_port": cfg["OPENRGB_UDP_PORT"],
+        }
+
+    async def create_pc_instance(self) -> dict:
+        """Cria a instância "PC RGB" no banco do HyperHDR local (com backup), com o HyperHDR parado."""
+        cfg = _read_config()
+        kind, _ = await self._detect()
+        if kind not in ("native", "distrobox") or not os.path.exists(HYPERHDR_DB):
+            return {"ok": False, "error": "só dá para criar automaticamente com o HyperHDR nesta máquina"}
+        await _systemctl("stop", HYPERHDR_UNIT)
+        # Editar com o HyperHDR rodando perde a mudança: espera o processo sumir de verdade
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            code, _ = await _run("pgrep", "-x", "hyperhdr")
+            if code != 0 and not await asyncio.to_thread(_tcp_open, "127.0.0.1", 8090, 0.5):
+                break
+            await asyncio.sleep(1)
+        else:
+            await _systemctl("start", HYPERHDR_UNIT)
+            return {"ok": False, "error": "o HyperHDR não parou; feche-o (inclusive no Desktop) e tente de novo"}
+        code, out = await _run("python3", os.path.join(SCRIPTS, "hyperhdr-add-instance.py"),
+                               HYPERHDR_DB, cfg["OPENRGB_UDP_PORT"], PC_INSTANCE_NAME)
+        try:
+            result = json.loads(out.splitlines()[-1])
+        except (ValueError, IndexError):
+            result = {"ok": False, "error": out[-300:] or "falha ao editar o banco"}
+        # Sobe de novo mesmo se estava parado: confirma que a instância nova inicia
+        await _systemctl("start", HYPERHDR_UNIT)
+        if result.get("ok") and not await self._wait_api("127.0.0.1", 30):
+            result["warning"] = "a instância foi criada, mas o HyperHDR demorou para voltar"
+        return result
+
+    async def test_pc_leds(self) -> dict:
+        """Testa o caminho inteiro: HyperHDR → instância PC RGB → ponte → OpenRGB."""
+        cfg = _read_config()
+        if cfg["OPENRGB_ENABLE"] != "1":
+            cfg["OPENRGB_ENABLE"] = "1"
+            _write_config(cfg)
+        await _systemctl("start", *OPENRGB_UNITS)
+        end = time.monotonic() + 40
+        st = None
+        while time.monotonic() < end:
+            st = _read_openrgb_status()
+            if st and st.get("devices"):
+                break
+            await asyncio.sleep(1)
+        else:
+            state = (st or {}).get("state", "sem resposta da ponte")
+            return {"ok": False, "error": f"a ponte do OpenRGB não ficou pronta ({state})"}
+        before = st.get("last_packet") or 0
+        leds = await self.test_leds()
+        if not leds["ok"]:
+            return leds
+        await asyncio.sleep(2.5)  # o arquivo de status é atualizado a cada 2 s
+        st = _read_openrgb_status() or {}
+        if (st.get("last_packet") or 0) <= before:
+            return {"ok": False, "error": "as cores não chegaram à ponte: confira a saída udpraw da instância "
+                                          f"\"{PC_INSTANCE_NAME}\" (127.0.0.1:{cfg['OPENRGB_UDP_PORT']})"}
+        return {"ok": True, "devices": st.get("devices")}
+
+    async def finish_setup(self, autostart: bool, start_now: bool) -> bool:
+        cfg = _read_config()
+        cfg["SETUP_DONE"] = "1"
+        _write_config(cfg)
+        await self.set_autostart(autostart)
+        if start_now:
+            await self.set_enabled(True)
+        return True
 
     async def _main(self):
         await self._install_units()

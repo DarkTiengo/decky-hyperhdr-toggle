@@ -162,6 +162,18 @@ Na aba **Desenvolvedor** do Decky, escolha uma das opções:
 
 O plugin aparece no menu rápido como **HyperHDR**. Ao carregar, ele cria os serviços em `~/.config/systemd/user/` e o arquivo de configuração `~/.config/hyperhdr-decky.env`.
 
+### 4. Rode o assistente de configuração
+
+Na primeira vez, o painel mostra **Abrir a configuração inicial**. Depois, o assistente continua disponível em **Configuração → Assistente de configuração**. Ele abre em tela cheia, navegável pelo controle, e passa por:
+
+1. **Dependências:** confere tudo da tabela de [Requisitos](#requisitos) e, quando falta algo, mostra o nome do pacote para a sua distro.
+2. **HyperHDR:** você escolhe onde ele está (ou instala o portátil) e testa a conexão. O assistente inicia o HyperHDR se estiver parado e confere a API (porta 8090, com a versão), o servidor Flatbuffers (porta 19400) e as instâncias.
+3. **Teste dos LEDs:** acende vermelho, verde e azul pelo HyperHDR, sem precisar de jogo aberto, e pergunta se você viu. Se não, mostra o que conferir na Web UI.
+4. **Luzes do PC (opcional):** procura o OpenRGB e os dispositivos e confere se existe a instância "PC RGB". Se não existir, oferece criá-la, como descrito em [Luzes do PC](#luzes-do-pc-openrgb). No fim testa o caminho inteiro (HyperHDR → instância → ponte → OpenRGB).
+5. **Concluir:** escolhe se a captura inicia com o sistema e se liga agora.
+
+> Os testes ligam o HyperHDR se ele estiver parado, mas não desligam nada. Mesmo assim, se um jogo estiver aberto, salve antes.
+
 > O plugin ainda não está na loja oficial do Decky. Os detalhes estão em [Status e créditos](#status-e-créditos).
 
 ## Configuração passo a passo
@@ -230,10 +242,12 @@ Depois, na Web UI do HyperHDR, ative **Video capture** em `GamescopeCapture (vid
 | Controle | **HyperHDR** | Liga e desliga a captura e o HyperHDR local |
 | | **Saída de LEDs** | Liga e desliga o componente `LEDDEVICE` do HyperHDR sem parar o serviço |
 | | **Encaminhar (forwarder)** | Só aparece se você usa o forwarder. Pausa o envio para outro HyperHDR. |
-| | **LEDs do PC (OpenRGB)** | Faz as luzes RGB do PC seguirem a cor da tela (veja [Luzes do PC](#luzes-do-pc-openrgb)). Liga e desliga sem mexer na captura. |
+| | **LEDs do PC (OpenRGB)** | Faz as luzes RGB do PC seguirem a cor da tela (veja [Luzes do PC](#luzes-do-pc-openrgb)). **Só funciona com a chave HyperHDR ligada**, porque as cores vêm do HyperHDR. Liga e desliga sem mexer na captura. |
+| Configuração | **Assistente de configuração** | Abre o assistente (dependências, teste do HyperHDR, teste dos LEDs, luzes do PC) |
 | | **Iniciar com o sistema** | Habilita os serviços no login. A captura começa sozinha quando o Game Mode abre. |
 | Status | **HyperHDR** | Estado do serviço e o modo detectado (nativo, distrobox, externo, não encontrado) |
 | | **Captura** | Estado da ponte. "Rodando" no Desktop significa que ela está esperando o gamescope. |
+| | **LEDs do PC** | *Aguardando a chave HyperHDR*, *Sem servidor do OpenRGB*, *OpenRGB sem dispositivos*, *Sem cores do HyperHDR* (instância "PC RGB" faltando ou mal configurada) ou *Sincronizando* |
 | | **Web UI** | Endereço da interface web do HyperHDR |
 | Configuração | **Onde está o HyperHDR** | Automático / Nativo ou portátil / Distrobox / Outro computador |
 | | **Instalar/Atualizar HyperHDR portátil** | Baixa a última release oficial para `~/.local/share/hyperhdr-portable` |
@@ -291,6 +305,7 @@ captura ─▶ HyperHDR ┬ instância 0 → TV (sem mudanças)
 - A imagem do Flatbuffers chega a **todas** as instâncias do HyperHDR. Por isso a instância nova recebe a mesma captura sem nada extra.
 - A ponte (`decky-hyperhdr-openrgb.service`) recebe a cor pela saída `udpraw` do HyperHDR e aplica nos dispositivos pelo protocolo SDK do OpenRGB. O cliente do SDK é implementação própria, sem dependências.
 - O plugin sobe o servidor do OpenRGB sem janela (`decky-openrgb-server.service`). Se a interface do OpenRGB já estiver rodando como servidor na mesma porta, ele usa essa.
+- **Depende da chave HyperHDR.** As cores são calculadas pelo HyperHDR, então as luzes do PC só funcionam com a captura e o HyperHDR ligados. Com a chave HyperHDR desligada, a chave das luzes do PC só guarda a escolha, e o painel mostra *Aguardando a chave HyperHDR*. É também isso que mantém o PC sincronizado com a TV.
 - **Ao desligar**, cada dispositivo volta a um efeito de hardware. O padrão é o primeiro disponível entre `Rainbow Wave`, `Rainbow`, `Spectrum Cycle` e `Color Shift`. O OpenRGB não consegue ler o efeito que estava ativo antes, então a escolha é configurável.
 
 ### Requisitos
@@ -301,12 +316,16 @@ captura ─▶ HyperHDR ┬ instância 0 → TV (sem mudanças)
 
 ### Passo a passo
 
+O jeito mais fácil é o [assistente de configuração](#4-rode-o-assistente-de-configuração). Com o HyperHDR nesta máquina, ele cria a instância "PC RGB" sozinho: para o HyperHDR por alguns segundos, faz backup do `~/.hyperhdr/db/hyperhdr.db`, copia a configuração da instância principal e define a saída `udpraw`. Para fazer à mão:
+
 1. **Crie uma segunda instância no HyperHDR.** Na Web UI (`:8090`): *Instances* (ou *Instance management*) → criar → nome **PC RGB** → iniciar.
 2. **Configure a saída da instância.** Selecione a instância **PC RGB** no topo da Web UI e vá em *LED Hardware*:
    - **Controller type:** `udpraw`, **Target IP:** `127.0.0.1`, **Port:** `19446`
    - **LED layout:** 1 LED cobrindo a tela inteira, ou seja, *Classic* com 1 LED, ou no modo avançado `hmin 0 / hmax 1 / vmin 0 / vmax 1`
    - Para ficar no mesmo ritmo da TV, copie a suavização (*Smoothing*) e a correção de cor da instância principal.
 3. **No painel do plugin**, ligue **LEDs do PC (OpenRGB)** e a chave **HyperHDR**.
+
+**HyperHDR em outro computador:** crie a instância "PC RGB" **no HyperHDR remoto**, com saída `udpraw` apontando para o **IP deste PC** (aparece no assistente) e porta `19446`. Nesse modo a ponte escuta na rede (`0.0.0.0:19446`), e não só em `127.0.0.1`. Se houver firewall, libere a porta UDP 19446.
 
 Na primeira execução a ponte cria `~/.config/hyperhdr-decky-openrgb.json`, com uma entrada por dispositivo:
 
@@ -387,6 +406,8 @@ Se você precisa de logs antigos, aumente o teto (exemplo: `SystemMaxUse=500M` e
 | "HyperHDR (não encontrado)" | Use **Instalar HyperHDR portátil**, escolha o modo certo ou defina `HYPERHDR_BIN` / `HYPERHDR_BOX`. |
 | Captura reinicia sem parar | Veja `journalctl --user -u decky-hyperhdr-bridge`. No modo v4l2, o `/dev/video50` provavelmente sumiu depois do reboot (veja [Problemas conhecidos](#problemas-conhecidos)). |
 | Captura parou de funcionar e não volta | Talvez algum programa tenha derrubado o PipeWire do gamescope (`pipewire: exiting` no journal). Troque para o Desktop e volte ao Game Mode. |
+| "LEDs do PC: Aguardando a chave HyperHDR" | Ligue a chave **HyperHDR**: as cores das luzes do PC vêm dele. |
+| "LEDs do PC: Sem cores do HyperHDR" | A instância "PC RGB" não existe ou a saída dela não aponta para `udpraw 127.0.0.1:19446`. Use o assistente ou confira na Web UI. |
 | Toast "API do HyperHDR não respondeu" | Confirme se o HyperHDR está rodando e se a Web UI abre na porta 8090. |
 | LEDs USB não acendem no modo nativo | Permissão da porta serial: adicione o usuário ao grupo `uucp` ou `dialout`. |
 
@@ -410,6 +431,7 @@ A configuração do HyperHDR (`~/.hyperhdr`) não é tocada.
 ```
 .
 ├── src/index.tsx                              # painel (React, @decky/ui)
+├── src/Setup.tsx                              # assistente de configuração (página própria)
 ├── main.py                                    # backend do Decky: serviços, configuração, detecção, instalação do portátil
 ├── defaults/scripts/                          # vão para scripts/ no pacote
 │   ├── hyperhdr-launch.sh                     # detecta e inicia/para o HyperHDR
@@ -419,6 +441,8 @@ A configuração do HyperHDR (`~/.hyperhdr`) não é tocada.
 │   ├── hyperhdr-openrgb-bridge.py             # luzes do PC: udpraw do HyperHDR → OpenRGB
 │   ├── openrgb_sdk.py                         # cliente mínimo do OpenRGB SDK (protocolo 3)
 │   ├── openrgb-server.sh                      # sobe o servidor do OpenRGB sem janela
+│   ├── hyperhdr-add-instance.py               # cria a instância "PC RGB" no banco do HyperHDR (com backup)
+│   ├── check-deps.sh                          # checagem de dependências usada pelo assistente
 │   └── setup-v4l2loopback.sh                  # opcional, root
 ├── py_modules/flatbuffers/                    # biblioteca FlatBuffers (Apache-2.0), embutida
 ├── package.sh                                 # gera out/hyperhdr-toggle.zip
@@ -468,10 +492,12 @@ Para testar no aparelho sem reinstalar: copie os arquivos para `~/homebrew/plugi
 - Capture via **Flatbuffers** (default: TCP 19400, priority 150, no root or kernel module) or **v4l2loopback** (`/dev/video50`)
 - **Capture throttle** (default on): FPS loss ~1.6% instead of ~5.3%
 - **Graceful shutdown**: pauses the stream before disconnecting
-- **PC RGB lights via OpenRGB**: RAM, motherboard and fans follow the same picture, in sync with the TV. A second HyperHDR instance ("PC RGB", 1 LED = whole screen, `udpraw` output to `127.0.0.1:19446`) feeds a small bridge that drives OpenRGB over its SDK. When you turn it off, each device goes back to a hardware effect.
+- **PC RGB lights via OpenRGB**: RAM, motherboard and fans follow the same picture, in sync with the TV. A second HyperHDR instance ("PC RGB", 1 LED = whole screen, `udpraw` output to `127.0.0.1:19446`) feeds a small bridge that drives OpenRGB over its SDK. When you turn it off, each device goes back to a hardware effect. PC lights only work while the main **HyperHDR** toggle is on, because HyperHDR computes the colors. With a remote HyperHDR, point the remote "PC RGB" instance's `udpraw` output at this PC's IP, port 19446.
 - Toggles for the LED output and forwarder, autostart, and quality presets
 
 **Install**
+
+After installing, open the plugin and tap **Abrir a configuração inicial**, the first-run setup wizard. It checks dependencies, finds and tests HyperHDR (API, version, Flatbuffers), flashes your LEDs red/green/blue to confirm, and can set up the PC RGB lights, including creating the "PC RGB" HyperHDR instance.
 
 1. Enable Decky's developer mode (Settings → General).
 2. Go to Developer → *Install plugin from URL* and paste:

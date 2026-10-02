@@ -2,15 +2,17 @@ import {
   ButtonItem,
   DropdownItem,
   Field,
+  Navigation,
   PanelSection,
   PanelSectionRow,
   TextField,
   ToggleField,
   staticClasses,
 } from "@decky/ui";
-import { callable, definePlugin, toaster } from "@decky/api";
+import { callable, definePlugin, routerHook, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { FaLightbulb } from "react-icons/fa";
+import { SETUP_ROUTE, SetupWizard } from "./Setup";
 
 type Status = {
   kind: "native" | "distrobox" | "external" | "missing";
@@ -45,6 +47,12 @@ const STATE_LABEL: Record<string, string> = {
   inactive: "Parado",
   failed: "Falhou",
   external: "Externo",
+  disabled: "Desligado",
+  waiting_main: "Aguardando a chave HyperHDR",
+  no_server: "Sem servidor do OpenRGB",
+  no_devices: "OpenRGB sem dispositivos",
+  no_data: "Sem cores do HyperHDR (instância PC RGB?)",
+  syncing: "Sincronizando",
 };
 
 const KIND_LABEL: Record<Status["kind"], string> = {
@@ -72,6 +80,11 @@ const QUALITY_OPTIONS = [
   { data: "640x360@30", label: "Detalhado — 640x360, 30 fps" },
   { data: "320x180@60", label: "Fluido — 320x180, 60 fps" },
 ];
+
+function openSetup() {
+  Navigation.CloseSideMenus();
+  Navigation.Navigate(SETUP_ROUTE);
+}
 
 function label(state: string) {
   return STATE_LABEL[state] ?? state;
@@ -162,6 +175,15 @@ function Content() {
 
   return (
     <>
+      {settings && settings.SETUP_DONE !== "1" && (
+        <PanelSection title="Primeiros passos">
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={openSetup}>
+              Abrir a configuração inicial
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
       <PanelSection title="Controle">
         <PanelSectionRow>
           <ToggleField
@@ -195,7 +217,7 @@ function Content() {
           <PanelSectionRow>
             <ToggleField
               label="LEDs do PC (OpenRGB)"
-              description="RAM, placa-mãe e fans seguem a cor da tela"
+              description="RAM, placa e fans seguem a tela; funciona junto com a chave HyperHDR"
               checked={settings.OPENRGB_ENABLE === "1"}
               disabled={busy}
               onChange={(v) => onSetting("OPENRGB_ENABLE", v ? "1" : "0")}
@@ -248,6 +270,11 @@ function Content() {
 
       {settings && (
         <PanelSection title="Configuração">
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={openSetup}>
+              Assistente de configuração
+            </ButtonItem>
+          </PanelSectionRow>
           <PanelSectionRow>
             <DropdownItem
               label="Onde está o HyperHDR"
@@ -314,9 +341,15 @@ function Content() {
   );
 }
 
-export default definePlugin(() => ({
-  name: "HyperHDR Toggle",
-  titleView: <div className={staticClasses.Title}>HyperHDR</div>,
-  content: <Content />,
-  icon: <FaLightbulb />,
-}));
+export default definePlugin(() => {
+  routerHook.addRoute(SETUP_ROUTE, SetupWizard, { exact: true });
+  return {
+    name: "HyperHDR Toggle",
+    titleView: <div className={staticClasses.Title}>HyperHDR</div>,
+    content: <Content />,
+    icon: <FaLightbulb />,
+    onDismount() {
+      routerHook.removeRoute(SETUP_ROUTE);
+    },
+  };
+});
