@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/DarkTiengo/decky-hyperhdr-toggle)](https://github.com/DarkTiengo/decky-hyperhdr-toggle/releases/latest)
 [![License](https://img.shields.io/github/license/DarkTiengo/decky-hyperhdr-toggle)](LICENSE)
 
-*English summary at the end.*
+*English summary at the end.* · **🙋 Testadores procurados (SteamOS e outras distros):** [#1](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues/1)
 
 ---
 
@@ -320,7 +320,10 @@ Para testar no aparelho sem reinstalar: copie os arquivos para `~/homebrew/plugi
 ## Status e créditos
 
 - **Testado:** Bazzite 44 (KDE + Game Mode, gamescope 3.16.31-ogc1), HyperHDR 22 em distrobox, nos dois métodos de captura. O modo portátil foi testado fora do Decky (Arch e Bazzite).
-- **Não testado:** SteamOS no Steam Deck e outras distros. Relatos são bem-vindos nas [issues](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues).
+- **Não testado:** SteamOS no Steam Deck, portáteis com Bazzite, GPUs NVIDIA, ChimeraOS e outras distros com gamescope.
+
+> ### 🙋 Procuram-se testadores
+> Se você usa **SteamOS (Steam Deck)** ou outra distro com o Game Mode do Steam, ajude a testar! O roteiro de teste está na issue fixada **[#1 Testers wanted](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues/1)**. Para relatar, abra uma issue com o modelo **[Relato de teste](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues/new?template=test-report.yml)**. Resultados parciais também ajudam, e pode escrever em português.
 - **Loja do Decky:** ainda não enviado. O formulário da loja exige declarar que a maior parte do código não foi escrita por IA generativa e que o plugin foi testado no SteamOS Stable e Beta. Nenhuma das duas condições se aplica hoje, porque este projeto foi desenvolvido com a ajuda de um assistente de IA (Claude) e só foi testado no Bazzite. Enquanto isso, a instalação é pela release.
 
 **Licenças:**
@@ -379,6 +382,6 @@ The FPS cost comes from gamescope rendering a full-resolution copy for every Pip
 - gamescope 3.16.x once crashed (SIGSEGV) when the capture disconnected mid-copy during a heavy game. Since the graceful shutdown: 0 crashes in 50 test cycles. Still, prefer toggling outside games.
 - Never force a pixel format on the `gamescope` node. A rejected negotiation kills gamescope's PipeWire until the session restarts ([OpenGamingCollective/gamescope#27](https://github.com/OpenGamingCollective/gamescope/issues/27)).
 
-**Status:** tested on Bazzite only. SteamOS reports are welcome. Developed with the help of an AI assistant (Claude), so it is not submitted to the Decky store.
+**Status:** tested on Bazzite only. **Testers wanted**, especially SteamOS on a Steam Deck: see the pinned issue [#1](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues/1) for the test plan, and report with the [test report template](https://github.com/DarkTiengo/decky-hyperhdr-toggle/issues/new?template=test-report.yml). Developed with the help of an AI assistant (Claude), so it is not submitted to the Decky store.
 
 **Licenses:** BSD-3-Clause (plugin), Apache-2.0 (bundled FlatBuffers), MIT (HyperHDR schema).
