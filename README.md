@@ -350,6 +350,7 @@ Dispositivos com o mesmo nome, como dois pentes de memória iguais, compartilham
 - **Custo:** medido no Bazzite com vídeo tocando, em % de um núcleo: ponte do OpenRGB ~0,1%, servidor do OpenRGB ~0,3%. A ponte só envia quando a cor muda.
 - **Plugin de efeitos do OpenRGB:** se ele estiver ativo ao mesmo tempo, os dois brigam pelos LEDs. Pause os efeitos enquanto sincroniza.
 - **Programas que mexem no SMBus** (como os do fabricante da memória) podem conflitar com o OpenRGB.
+- **Detecção do OpenRGB:** o servidor detecta um dispositivo por vez (ex.: memórias antes da placa-mãe). A ponte espera a lista ficar estável antes de começar e relê os dispositivos sempre que o OpenRGB avisa que a lista mudou. Até a v0.5.0, ao ligar tudo junto pela chave HyperHDR, só as memórias acendiam.
 - **Ordem de parada:** o plugin para a ponte antes do servidor, para dar tempo de restaurar o efeito. A ponte também espera 2 s depois de restaurar, porque as memórias aplicam os comandos devagar.
 
 ## Desempenho
@@ -445,6 +446,7 @@ A configuração do HyperHDR (`~/.hyperhdr`) não é tocada.
 │   ├── check-deps.sh                          # checagem de dependências usada pelo assistente
 │   └── setup-v4l2loopback.sh                  # opcional, root
 ├── py_modules/flatbuffers/                    # biblioteca FlatBuffers (Apache-2.0), embutida
+├── tests/                                     # OpenRGB simulado e teste da ponte (python3 tests/test_openrgb_bridge.py)
 ├── package.sh                                 # gera out/hyperhdr-toggle.zip
 └── .github/workflows/release.yml              # tag v* → build e release com o zip
 ```

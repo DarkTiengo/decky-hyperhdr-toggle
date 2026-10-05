@@ -623,6 +623,9 @@ class Plugin:
                 finally:
                     client.close()
                 if devices:
+                    # O OpenRGB detecta um dispositivo por vez (ex.: memórias antes da placa-mãe):
+                    # só responde quando a contagem fica estável por alguns segundos
+                    devices = await self._stable_devices(sdk, host, port, devices)
                     result["devices"] = [{"name": d.name, "leds": d.num_leds} for d in devices]
                     return result
                 last_error = "o OpenRGB não encontrou dispositivos"
@@ -631,6 +634,20 @@ class Plugin:
             await asyncio.sleep(2)
         result["error"] = f"OpenRGB: {last_error}"
         return result
+
+    async def _stable_devices(self, sdk, host: str, port: int, devices: list, settle: float = 3.0,
+                              limit: float = 20.0) -> list:
+        stable_since, deadline = time.monotonic(), time.monotonic() + limit
+        while time.monotonic() - stable_since < settle and time.monotonic() < deadline:
+            await asyncio.sleep(1)
+            client = await asyncio.to_thread(sdk.OpenRGBClient, host, port, "Decky HyperHDR (assistente)")
+            try:
+                now = await asyncio.to_thread(client.controllers)
+            finally:
+                client.close()
+            if len(now) != len(devices):
+                devices, stable_since = now, time.monotonic()
+        return devices
 
     async def pc_instance_status(self) -> dict:
         cfg = _read_config()

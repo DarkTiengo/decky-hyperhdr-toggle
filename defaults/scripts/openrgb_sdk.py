@@ -4,6 +4,7 @@ Implementação própria, sem dependências, seguindo a documentação oficial
 (OpenRGB Documentation/OpenRGBSDK.md). Usa o protocolo 3: tem brilho nos modos
 e ainda não tem segmentos/flags, então o parser fica pequeno.
 """
+import select
 import socket
 import struct
 
@@ -13,6 +14,7 @@ REQUEST_CONTROLLER_COUNT = 0
 REQUEST_CONTROLLER_DATA = 1
 REQUEST_PROTOCOL_VERSION = 40
 SET_CLIENT_NAME = 50
+DEVICE_LIST_UPDATED = 100  # enviado pelo servidor quando detecta/remove dispositivos
 RGBCONTROLLER_UPDATELEDS = 1050
 RGBCONTROLLER_SETCUSTOMMODE = 1100
 RGBCONTROLLER_UPDATEMODE = 1101
@@ -100,6 +102,7 @@ class OpenRGBClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 6742, name: str = "Decky HyperHDR", timeout: float = 5.0):
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.device_list_changed = False
         self._send(0, SET_CLIENT_NAME, name.encode() + b"\0")
         self._send(0, REQUEST_PROTOCOL_VERSION, struct.pack("<I", PROTOCOL_VERSION))
         try:
@@ -126,19 +129,38 @@ class OpenRGBClient:
             buf += chunk
         return bytes(buf)
 
+    def _read_packet(self) -> tuple[int, bytes]:
+        magic, _dev, pkt, size = HEADER.unpack(self._recv_exact(HEADER.size))
+        if magic != b"ORGB":
+            raise ConnectionError("resposta inválida do servidor OpenRGB")
+        payload = self._recv_exact(size)
+        if pkt == DEVICE_LIST_UPDATED:
+            self.device_list_changed = True
+        return pkt, payload
+
     def _recv(self, expected: int) -> bytes:
-        # O servidor pode mandar avisos (ex.: lista de dispositivos mudou) no meio; ignora o que não é a resposta
+        # O servidor pode mandar avisos no meio da resposta; guarda o de "lista mudou"
         while True:
-            magic, _dev, pkt, size = HEADER.unpack(self._recv_exact(HEADER.size))
-            if magic != b"ORGB":
-                raise ConnectionError("resposta inválida do servidor OpenRGB")
-            payload = self._recv_exact(size)
+            pkt, payload = self._read_packet()
             if pkt == expected:
                 return payload
 
-    def controllers(self) -> list[Controller]:
+    def fileno(self) -> int:
+        return self.sock.fileno()
+
+    def poll_device_list_changed(self) -> bool:
+        """Lê os avisos pendentes sem bloquear; True se a lista de dispositivos mudou desde a última vez."""
+        while select.select([self.sock], [], [], 0)[0]:
+            self._read_packet()
+        changed, self.device_list_changed = self.device_list_changed, False
+        return changed
+
+    def controller_count(self) -> int:
         self._send(0, REQUEST_CONTROLLER_COUNT)
-        count = struct.unpack_from("<I", self._recv(REQUEST_CONTROLLER_COUNT))[0]
+        return struct.unpack_from("<I", self._recv(REQUEST_CONTROLLER_COUNT))[0]
+
+    def controllers(self) -> list[Controller]:
+        count = self.controller_count()
         result = []
         for i in range(count):
             payload = struct.pack("<I", self.protocol) if self.protocol >= 1 else b""

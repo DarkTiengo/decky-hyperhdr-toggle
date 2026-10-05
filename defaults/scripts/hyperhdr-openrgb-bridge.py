@@ -44,6 +44,10 @@ DEFAULT_HZ = 30
 MIN_DELTA = 6
 # Sem dados do HyperHDR por este tempo (captura parada), volta ao efeito de fábrica
 IDLE_RESTORE_S = 10.0
+# O OpenRGB abre a porta antes de terminar a detecção e detecta um dispositivo por vez
+# (ex.: memórias antes da placa-mãe). Só começa quando a contagem fica estável por este tempo.
+DETECTION_SETTLE_S = 3.0
+DETECTION_MAX_WAIT_S = 30.0
 # O servidor aplica os comandos numa fila; a DRAM em SMBus demora. Sem esperar, parar o
 # servidor logo em seguida descartava a troca de modo das memórias.
 RESTORE_SETTLE_S = 2.0
@@ -117,11 +121,31 @@ class Bridge:
                 log(f"sem conexão com o OpenRGB em {HOST}:{PORT}: {e}")
                 write_status(state="no_server", devices=0, last_packet=0)
             time.sleep(3)
+        self.wait_detection()
+        self.reload_devices()
+
+    def wait_detection(self) -> None:
+        count, stable_since = len(self.devices), time.monotonic()
+        deadline = time.monotonic() + DETECTION_MAX_WAIT_S
+        while time.monotonic() - stable_since < DETECTION_SETTLE_S and time.monotonic() < deadline:
+            time.sleep(1)
+            now = self.client.controller_count()
+            if now != count:
+                log(f"OpenRGB ainda detectando: {count} → {now} dispositivos")
+                count, stable_since = now, time.monotonic()
+
+    def reload_devices(self) -> None:
+        """(Re)lê os dispositivos; chamado no início e quando o OpenRGB avisa que a lista mudou."""
+        self.client.poll_device_list_changed()  # descarta avisos já cobertos por esta leitura
+        self.devices = self.client.controllers()
         self.mapping = load_mapping(self.devices)
         for d in self.devices:
             m = self.mapping[d.name]
             log(f"{d.index}: {d.name} ({d.num_leds} LEDs) → LED {m['led']} do HyperHDR, "
                 f"{m['max_hz']} Hz, restaura '{m['restore_mode']}'{'' if m['enabled'] else ' [desativado]'}")
+        if self.direct:
+            # Dispositivos novos também precisam entrar no modo Direct; reenvia a cor atual para todos
+            self.take_control()
 
     def take_control(self) -> None:
         for d in self.devices:
@@ -183,7 +207,12 @@ def main() -> int:
     exit_code = 0
     try:
         while not stop["now"]:
-            ready = select.select([udp], [], [], 1.0)[0]
+            ready = select.select([udp, bridge.client], [], [], 1.0)[0]
+            if bridge.client in ready:
+                if bridge.client.poll_device_list_changed():
+                    log("OpenRGB avisou que a lista de dispositivos mudou; relendo")
+                    bridge.reload_devices()
+                ready = [r for r in ready if r is not bridge.client]
             if time.monotonic() - last_status >= STATUS_INTERVAL_S:
                 write_status(state="running", devices=len(bridge.devices), last_packet=last_packet_wall,
                              syncing=bridge.direct)
