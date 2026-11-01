@@ -4,11 +4,15 @@
 O HyperHDR manda um datagrama UDP com N×3 bytes (RGB de cada LED da instância).
 Cada dispositivo do OpenRGB segue um desses LEDs (padrão: LED 0 = cor média da tela).
 Ao parar, cada dispositivo volta para um modo de hardware (efeito de fábrica).
+O teclado AJAZZ AK820 Pro (no cabo USB) é tratado à parte, direto pelo hidraw (ak820.py): cada
+tecla segue a região da tela correspondente, usando a grade da instância "PC RGB".
 
 Configuração por ambiente (ver ~/.config/hyperhdr-decky.env):
   OPENRGB_HOST / OPENRGB_PORT   servidor SDK do OpenRGB (127.0.0.1:6742)
   OPENRGB_UDP_PORT              porta UDP que o HyperHDR usa no udpraw (19446)
   OPENRGB_UDP_BIND              endereço onde escutar (padrão: 127.0.0.1; 0.0.0.0 com HyperHDR externo)
+  AK820_ENABLE                  0 desliga o teclado AK820 Pro (padrão: 1)
+  AK820_MAX_HZ                  quadros por segundo no teclado (padrão: 12; o firmware aguenta ~14)
 O estado (servidor encontrado, última cor recebida) fica em $XDG_RUNTIME_DIR/decky-hyperhdr-openrgb.json
 para o painel do plugin.
 Mapeamento por dispositivo: ~/.config/hyperhdr-decky-openrgb.json (gerado na primeira execução)
@@ -19,9 +23,11 @@ import select
 import signal
 import socket
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ak820  # noqa: E402
 import openrgb_sdk  # noqa: E402
 
 HOST = os.environ.get("OPENRGB_HOST", "127.0.0.1")
@@ -51,6 +57,10 @@ DETECTION_MAX_WAIT_S = 30.0
 # O servidor aplica os comandos numa fila; a DRAM em SMBus demora. Sem esperar, parar o
 # servidor logo em seguida descartava a troca de modo das memórias.
 RESTORE_SETTLE_S = 2.0
+AK820_ENABLE = os.environ.get("AK820_ENABLE", "1") == "1"
+AK820_MAX_HZ = float(os.environ.get("AK820_MAX_HZ", "12"))
+# Sem teclado no cabo, procura de novo a cada tanto (plugar o cabo com a ponte rodando)
+AK820_RESCAN_S = 3.0
 
 
 def log(msg: str) -> None:
@@ -98,6 +108,82 @@ def load_mapping(devices: list[openrgb_sdk.Controller]) -> dict:
     return mapping
 
 
+class KeyboardSync(threading.Thread):
+    """Mantém o AK820 Pro seguindo as cores mais recentes, numa thread própria.
+
+    Um quadro leva ~70 ms no USB; fora do laço principal, o teclado não atrasa o OpenRGB.
+    O efeito por tecla só dura enquanto chegam quadros, então o último é reenviado a
+    AK820_MAX_HZ mesmo com a tela parada. Parar de enviar (pause) já "restaura": o firmware
+    volta sozinho ao efeito salvo, sem nada gravado na flash.
+    """
+
+    def __init__(self):
+        super().__init__(daemon=True, name="ak820")
+        self.cond = threading.Condition()
+        self.leds: list[tuple[int, int, int]] | None = None
+        self.stopping = False
+        self.device: str | None = None  # nó hidraw em uso, para o status
+
+    def submit(self, leds: list[tuple[int, int, int]]) -> None:
+        with self.cond:
+            self.leds = leds
+            self.cond.notify()
+
+    def pause(self) -> None:
+        with self.cond:
+            self.leds = None
+
+    def stop(self) -> None:
+        with self.cond:
+            self.stopping = True
+            self.cond.notify()
+        self.join(timeout=2)
+
+    def _open(self, leds: list) -> ak820.Keyboard | None:
+        path = ak820.find_device()
+        if not path:
+            return None
+        try:
+            kb = ak820.Keyboard(path)
+        except OSError as e:
+            log(f"AK820 Pro em {path}, mas sem acesso: {e}")
+            return None
+        self.device = path
+        mode = "por tecla" if len(leds) >= ak820.GRID_LED_COUNT else "cor média (instância sem a grade)"
+        log(f"teclado AK820 Pro conectado em {path}: {mode}")
+        return kb
+
+    def run(self) -> None:
+        kb: ak820.Keyboard | None = None
+        next_scan = 0.0
+        while True:
+            with self.cond:
+                while not self.stopping and self.leds is None:
+                    self.cond.wait()
+                if self.stopping:
+                    break
+                leds = self.leds
+            started = time.monotonic()
+            if kb is None and started >= next_scan:
+                kb = self._open(leds)
+                if kb is None:
+                    next_scan = started + AK820_RESCAN_S
+            if kb is not None:
+                try:
+                    kb.show(ak820.colors_from_leds(leds))
+                except OSError as e:
+                    log(f"teclado AK820 Pro desconectado: {e}")
+                    kb.close()
+                    kb, self.device = None, None
+                    next_scan = time.monotonic() + AK820_RESCAN_S
+            deadline = started + 1.0 / AK820_MAX_HZ
+            with self.cond:
+                while not self.stopping and (left := deadline - time.monotonic()) > 0:
+                    self.cond.wait(left)
+        if kb:
+            kb.close()
+
+
 class Bridge:
     def __init__(self):
         self.client: openrgb_sdk.OpenRGBClient | None = None
@@ -105,6 +191,7 @@ class Bridge:
         self.mapping: dict = {}
         self.direct = False
         self.last_sent: dict[int, tuple[tuple[int, int, int], float]] = {}
+        self.keyboard = KeyboardSync() if AK820_ENABLE else None
 
     def connect(self) -> None:
         while True:
@@ -155,6 +242,8 @@ class Bridge:
         self.last_sent.clear()
 
     def apply(self, leds: list[tuple[int, int, int]]) -> None:
+        if self.keyboard and leds:
+            self.keyboard.submit(leds)
         if not self.direct:
             self.take_control()
         now = time.monotonic()
@@ -174,6 +263,8 @@ class Bridge:
             self.last_sent[d.index] = (color, now)
 
     def restore(self) -> None:
+        if self.keyboard:
+            self.keyboard.pause()
         if not self.direct or self.client is None:
             return
         for d in self.devices:
@@ -191,6 +282,8 @@ class Bridge:
 
 def main() -> int:
     bridge = Bridge()
+    if bridge.keyboard:
+        bridge.keyboard.start()
     bridge.connect()
 
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -215,6 +308,7 @@ def main() -> int:
                 ready = [r for r in ready if r is not bridge.client]
             if time.monotonic() - last_status >= STATUS_INTERVAL_S:
                 write_status(state="running", devices=len(bridge.devices), last_packet=last_packet_wall,
+                             keyboard=bridge.keyboard.device if bridge.keyboard else None,
                              syncing=bridge.direct)
                 last_status = time.monotonic()
             if not ready:
@@ -237,6 +331,8 @@ def main() -> int:
             bridge.restore()
         except OSError as e:
             log(f"não consegui devolver as luzes ao efeito de fábrica: {e}")
+        if bridge.keyboard:
+            bridge.keyboard.stop()
         if bridge.client:
             bridge.client.close()
         try:

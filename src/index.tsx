@@ -20,6 +20,7 @@ type Status = {
   hyperhdr: string;
   bridge: string;
   openrgb: string;
+  keyboard: "per_key" | "average" | null;
   api: boolean;
   leds: boolean | null;
   forwarding: boolean | null;
@@ -269,6 +270,13 @@ function Content() {
           <PanelSectionRow>
             <Field label="LEDs do PC" focusable>
               {label(status.openrgb)}
+            </Field>
+          </PanelSectionRow>
+        )}
+        {status?.keyboard && (
+          <PanelSectionRow>
+            <Field label="Teclado AK820 Pro" focusable>
+              {status.keyboard === "per_key" ? "Por tecla" : "Cor média (atualize a instância PC RGB no assistente)"}
             </Field>
           </PanelSectionRow>
         )}

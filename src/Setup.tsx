@@ -31,8 +31,16 @@ type HyperTest = {
   error: string | null;
 };
 type OrgbCheck = { installed: boolean; started: boolean; devices: { name: string; leds: number }[]; error: string | null };
-type PcInstance = { exists: boolean; running: boolean; can_create: boolean; external: boolean; ip: string; udp_port: string };
-type Result = { ok: boolean; error?: string; warning?: string; created?: boolean; backup?: string; version?: string };
+type PcInstance = {
+  exists: boolean;
+  running: boolean;
+  can_create: boolean;
+  external: boolean;
+  ip: string;
+  udp_port: string;
+  grid: boolean | null;
+};
+type Result = { ok: boolean; error?: string; warning?: string; created?: boolean; upgraded?: boolean; backup?: string; version?: string };
 
 const checkDependencies = callable<[], Dep[]>("check_dependencies");
 const getSettings = callable<[], Record<string, string>>("get_settings");
@@ -359,6 +367,26 @@ export function SetupWizard() {
               </DialogButton>
             </>
           )}
+          {pcInst?.exists && pcInst.grid === false && pcInst.can_create && (
+            <>
+              <Note>
+                Teclado AJAZZ AK820 Pro no cabo USB: o plugin pode acrescentar à instância uma grade da tela (16×6), para
+                cada tecla seguir a parte da tela que fica no mesmo lugar. O LED 0 continua sendo a cor média, então as
+                outras luzes não mudam. O HyperHDR para por alguns segundos e o banco ganha um backup antes.
+              </Note>
+              <DialogButton
+                disabled={busy !== null}
+                onClick={() =>
+                  run("create", async () => {
+                    setPcCreate(await createPcInstance());
+                    setPcInst(await pcInstanceStatus());
+                  })
+                }
+              >
+                {busy === "create" ? "Atualizando…" : "Ativar o RGB por tecla"}
+              </DialogButton>
+            </>
+          )}
           {pcInst && !pcInst.exists && !pcInst.can_create && (
             <Note>
               Crie a instância na Web UI do HyperHDR: <b>Instances</b> → nova instância <b>PC RGB</b> → em{" "}
@@ -368,6 +396,7 @@ export function SetupWizard() {
           )}
           {pcCreate && !pcCreate.ok && <Note>⚠ {pcCreate.error}</Note>}
           {pcCreate?.ok && pcCreate.created && <Note>Instância criada. Backup do banco: {pcCreate.backup}</Note>}
+          {pcCreate?.ok && pcCreate.upgraded && <Note>RGB por tecla ativado. Backup do banco: {pcCreate.backup}</Note>}
           <DialogButton
             disabled={busy !== null}
             onClick={() =>

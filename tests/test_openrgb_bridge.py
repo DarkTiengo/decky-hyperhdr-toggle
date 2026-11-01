@@ -42,7 +42,8 @@ def scenario(title: str, mock_args: list[str]) -> None:
     mock = subprocess.Popen([sys.executable, MOCK, str(SDK_PORT), log, *mock_args])
     time.sleep(0.5)
     env = dict(os.environ, OPENRGB_PORT=str(SDK_PORT), OPENRGB_UDP_PORT=str(UDP_PORT),
-               OPENRGB_MAP_FILE=os.path.join(tmp, "map.json"), XDG_RUNTIME_DIR=tmp, HYPERHDR_MODE="auto")
+               OPENRGB_MAP_FILE=os.path.join(tmp, "map.json"), XDG_RUNTIME_DIR=tmp, HYPERHDR_MODE="auto",
+               AK820_ENABLE="0")  # não mexe num teclado de verdade plugado
     out = open(os.path.join(tmp, "bridge.log"), "w")
     bridge = subprocess.Popen([sys.executable, BRIDGE], env=env, stdout=out, stderr=subprocess.STDOUT)
     try:

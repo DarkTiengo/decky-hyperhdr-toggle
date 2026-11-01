@@ -3,16 +3,26 @@
 
 Rode com o HyperHDR PARADO. Copia todas as configurações da instância 0 (cor, suavização…)
 para a nova, para que ela reaja no mesmo ritmo da principal, e troca só:
-  device -> udpraw 127.0.0.1:<porta>    leds -> 1 LED cobrindo a tela inteira
+  device -> udpraw 127.0.0.1:<porta>
+  leds   -> LED 0 cobrindo a tela inteira (cor média, seguida pelas luzes do OpenRGB)
+            + grade da tela (LEDs 1..), usada pelo RGB por tecla do teclado (ak820.py)
+Se a instância já existe com o layout antigo (só o LED 0), acrescenta a grade.
 Faz backup do banco antes. Imprime uma linha JSON com o resultado.
 
 Uso: hyperhdr-add-instance.py <caminho do hyperhdr.db> [porta] [nome]
 """
 import json
+import os
 import shutil
 import sqlite3
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ak820  # noqa: E402
+
+# Layout criado pelas versões anteriores do plugin: só a média da tela
+LEGACY_LEDS = [{"group": 0, "hmin": 0, "hmax": 1, "vmin": 0, "vmax": 1}]
 
 
 def fail(msg: str) -> None:
@@ -40,7 +50,19 @@ def main() -> None:
 
     existing = {r[1]: r[0] for r in c.execute("select instance, friendly_name from instances")}
     if name in existing:
-        print(json.dumps({"ok": True, "instance": existing[name], "created": False}))
+        index = existing[name]
+        row = c.execute("select config from settings where type='leds' and hyperhdr_instance=?", (index,)).fetchone()
+        upgraded, backup = False, None
+        # Só mexe no layout que o próprio plugin criou; um layout feito à mão fica como está
+        if row and json.loads(row[0]) == LEGACY_LEDS:
+            backup = f"{db}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+            shutil.copy2(db, backup)
+            with c:
+                c.execute("update settings set config=? where type='leds' and hyperhdr_instance=?",
+                          (json.dumps(ak820.grid_leds(), separators=(",", ":")), index))
+            upgraded = True
+        print(json.dumps({"ok": True, "instance": index, "created": False, "upgraded": upgraded,
+                          "backup": backup}))
         return
     if 0 not in existing.values():
         fail("instância 0 não encontrada")
@@ -66,7 +88,7 @@ def main() -> None:
                 c.execute("insert into settings (type, config, hyperhdr_instance) values (?, ?, ?)", (t, cfg, index))
         overrides = {
             "device": {"type": "udpraw", "host": "127.0.0.1", "port": port, "colorOrder": "rgb", "refreshTime": 0},
-            "leds": [{"group": 0, "hmin": 0, "hmax": 1, "vmin": 0, "vmax": 1}],
+            "leds": ak820.grid_leds(),
         }
         for t, cfg in overrides.items():
             value = json.dumps(cfg, separators=(",", ":"))

@@ -274,6 +274,21 @@ def _read_openrgb_status() -> dict | None:
         return None
 
 
+def _pc_instance_grid() -> bool | None:
+    """A instância "PC RGB" do banco local tem a grade da tela (RGB por tecla)? None se não deu para ler."""
+    ak820 = _load_script("ak820.py")
+    try:
+        c = sqlite3.connect(f"file:{HYPERHDR_DB}?mode=ro", uri=True)
+        try:
+            row = c.execute("select s.config from settings s join instances i on i.instance=s.hyperhdr_instance "
+                            "where i.friendly_name=? and s.type='leds'", (PC_INSTANCE_NAME,)).fetchone()
+        finally:
+            c.close()
+        return len(json.loads(row[0])) >= ak820.GRID_LED_COUNT if row else None
+    except (sqlite3.Error, ValueError):
+        return None
+
+
 def _send_test_colors(target: str, colors: list[tuple[int, int, int]], seconds: float) -> None:
     """Mostra cada cor por alguns segundos pelo servidor Flatbuffers; ao fechar, a prioridade some."""
     sender = _load_script("hyperhdr-flatbuffers-sender.py")
@@ -422,6 +437,7 @@ class Plugin:
             "hyperhdr": "external" if kind == "external" else states[HYPERHDR_UNIT],
             "bridge": states[BRIDGE_UNIT],
             "openrgb": self._openrgb_state(cfg, states),
+            "keyboard": self._keyboard_state(cfg, states),
             "api": info is not None,
             "leds": components.get("LEDDEVICE"),
             "forwarding": components.get("FORWARDER"),
@@ -445,6 +461,14 @@ class Plugin:
         if time.time() - (st.get("last_packet") or 0) > OPENRGB_STALE_S:
             return "no_data"
         return "syncing"
+
+    def _keyboard_state(self, cfg: dict, states: dict) -> str | None:
+        """Teclado AK820 Pro na ponte: None (sem teclado no cabo), "per_key" ou "average"."""
+        if cfg["OPENRGB_ENABLE"] != "1" or states[OPENRGB_UNIT] != "active":
+            return None
+        if not (_read_openrgb_status() or {}).get("keyboard"):
+            return None
+        return "average" if _pc_instance_grid() is False else "per_key"
 
     async def get_settings(self) -> dict:
         return _read_config()
@@ -703,6 +727,7 @@ class Plugin:
             "external": kind == "external",
             "ip": _local_ip(),
             "udp_port": cfg["OPENRGB_UDP_PORT"],
+            "grid": await asyncio.to_thread(_pc_instance_grid) if found else None,
         }
 
     async def _stop_hyperhdr_for_db(self) -> bool:
@@ -751,7 +776,9 @@ class Plugin:
         return result
 
     async def create_pc_instance(self) -> dict:
-        """Cria a instância "PC RGB" no banco do HyperHDR local (com backup), com o HyperHDR parado."""
+        """Cria a instância "PC RGB" no banco do HyperHDR local (com backup), com o HyperHDR parado.
+
+        Se ela já existe com o layout antigo (1 LED), acrescenta a grade do RGB por tecla."""
         cfg = _read_config()
         kind, _ = await self._detect()
         if kind not in ("native", "distrobox") or not os.path.exists(HYPERHDR_DB):
