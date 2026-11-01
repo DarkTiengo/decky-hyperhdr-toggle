@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import socket
+import sqlite3
 import tarfile
 import tempfile
 import time
@@ -57,6 +58,7 @@ CHOICES = {
 OPENRGB_KEYS = {"OPENRGB_ENABLE", "OPENRGB_HOST", "OPENRGB_PORT", "OPENRGB_UDP_PORT"}
 DETECT_TTL = 30
 PC_INSTANCE_NAME = "PC RGB"
+STOP_ERROR = "o HyperHDR não parou; feche-o (inclusive no Desktop) e tente de novo"
 HYPERHDR_DB = os.path.join(HOME, ".hyperhdr", "db", "hyperhdr.db")
 OPENRGB_STATUS = f"/run/user/{os.getuid()}/decky-hyperhdr-openrgb.json"
 # Sem cor nova por este tempo, o painel mostra "sem cores do HyperHDR"
@@ -294,6 +296,45 @@ def _local_ip() -> str:
             return s.getsockname()[0]
     except Exception:
         return "127.0.0.1"
+
+
+TARGET_RE = re.compile(r"^[A-Za-z0-9.\-]+:\d{1,5}$")
+
+
+def _read_forwarder() -> dict | None:
+    """Destinos Flatbuffers do forwarder do HyperHDR local. None se não deu para ler o banco."""
+    try:
+        c = sqlite3.connect(f"file:{HYPERHDR_DB}?mode=ro", uri=True)
+        try:
+            row = c.execute("select config from settings where type='forwarder'").fetchone()
+        finally:
+            c.close()
+        cfg = json.loads(row[0]) if row else {}
+        return {"enable": bool(cfg.get("enable")), "flat": list(cfg.get("flat") or [])}
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _write_forwarder(flat: list[str]) -> None:
+    """Grava os destinos Flatbuffers do forwarder (com backup). Rode com o HyperHDR PARADO."""
+    backup = f"{HYPERHDR_DB}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    if not os.path.exists(backup):
+        shutil.copy2(HYPERHDR_DB, backup)
+    c = sqlite3.connect(f"file:{HYPERHDR_DB}?mode=rw", uri=True)
+    try:
+        with c:
+            row = c.execute("select config from settings where type='forwarder'").fetchone()
+            cfg = json.loads(row[0]) if row else {"json": []}
+            cfg["flat"] = flat
+            cfg["enable"] = bool(flat or cfg.get("json"))
+            data = json.dumps(cfg, separators=(",", ":"))
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if row:
+                c.execute("update settings set config=?, updated_at=? where type='forwarder'", (data, now))
+            else:
+                c.execute("insert into settings (type, config, updated_at) values ('forwarder', ?, ?)", (data, now))
+    finally:
+        c.close()
 
 
 class Plugin:
@@ -664,23 +705,59 @@ class Plugin:
             "udp_port": cfg["OPENRGB_UDP_PORT"],
         }
 
-    async def create_pc_instance(self) -> dict:
-        """Cria a instância "PC RGB" no banco do HyperHDR local (com backup), com o HyperHDR parado."""
-        cfg = _read_config()
-        kind, _ = await self._detect()
-        if kind not in ("native", "distrobox") or not os.path.exists(HYPERHDR_DB):
-            return {"ok": False, "error": "só dá para criar automaticamente com o HyperHDR nesta máquina"}
+    async def _stop_hyperhdr_for_db(self) -> bool:
+        """Para o HyperHDR local antes de editar o banco. False (e religa) se ele não parar."""
         await _systemctl("stop", HYPERHDR_UNIT)
         # Editar com o HyperHDR rodando perde a mudança: espera o processo sumir de verdade
         end = time.monotonic() + 20
         while time.monotonic() < end:
             code, _ = await _run("pgrep", "-x", "hyperhdr")
             if code != 0 and not await asyncio.to_thread(_tcp_open, "127.0.0.1", 8090, 0.5):
-                break
+                return True
             await asyncio.sleep(1)
+        await _systemctl("start", HYPERHDR_UNIT)
+        return False
+
+    async def get_forwarder(self) -> dict:
+        """Para onde o HyperHDR local encaminha a imagem (outro HyperHDR, ex.: o da TV)."""
+        kind, _ = await self._detect()
+        fwd = await asyncio.to_thread(_read_forwarder) if kind in ("native", "distrobox") else None
+        return {"available": fwd is not None, "enable": bool(fwd and fwd["enable"]),
+                "flat": fwd["flat"] if fwd else []}
+
+    async def set_forwarder(self, target: str) -> dict:
+        """Troca o destino do forwarder (host:porta; vazio desliga). Reinicia o HyperHDR local."""
+        target = str(target).strip()
+        if target and ":" not in target:
+            target += ":19400"
+        if target and not (TARGET_RE.match(target) and 0 < int(target.rpartition(":")[2]) < 65536):
+            return {"ok": False, "error": "use host:porta, ex.: 192.168.0.10:19400"}
+        kind, _ = await self._detect()
+        if kind not in ("native", "distrobox") or not os.path.exists(HYPERHDR_DB):
+            return {"ok": False, "error": "só dá para mudar com o HyperHDR nesta máquina"}
+        _, active = await _systemctl("is-active", HYPERHDR_UNIT)
+        if not await self._stop_hyperhdr_for_db():
+            return {"ok": False, "error": STOP_ERROR}
+        try:
+            await asyncio.to_thread(_write_forwarder, [target] if target else [])
+        except (OSError, sqlite3.Error, ValueError) as e:
+            result = {"ok": False, "error": f"falha ao editar o banco: {e}"}
         else:
+            result = {"ok": True}
+        if active == "active":
             await _systemctl("start", HYPERHDR_UNIT)
-            return {"ok": False, "error": "o HyperHDR não parou; feche-o (inclusive no Desktop) e tente de novo"}
+            if result["ok"] and not await self._wait_api("127.0.0.1", 30):
+                result["warning"] = "salvo, mas o HyperHDR demorou para voltar"
+        return result
+
+    async def create_pc_instance(self) -> dict:
+        """Cria a instância "PC RGB" no banco do HyperHDR local (com backup), com o HyperHDR parado."""
+        cfg = _read_config()
+        kind, _ = await self._detect()
+        if kind not in ("native", "distrobox") or not os.path.exists(HYPERHDR_DB):
+            return {"ok": False, "error": "só dá para criar automaticamente com o HyperHDR nesta máquina"}
+        if not await self._stop_hyperhdr_for_db():
+            return {"ok": False, "error": STOP_ERROR}
         code, out = await _run("python3", os.path.join(SCRIPTS, "hyperhdr-add-instance.py"),
                                HYPERHDR_DB, cfg["OPENRGB_UDP_PORT"], PC_INSTANCE_NAME)
         try:

@@ -61,6 +61,7 @@ O gamescope, porém, publica a imagem já composta da tela como um **nó PipeWir
 - **Freio da captura** (ligado por padrão): reduz a perda de FPS no jogo de ~5,3% para ~1,6%
 - **Desligamento suave**: pausa o stream antes de desconectar, para evitar um travamento do gamescope
 - Liga e desliga a saída de LEDs e o forwarder do HyperHDR sem parar o serviço
+- **Destino do forwarder** editável no painel (ex.: o HyperHDR da TV mudou de IP), com backup do banco do HyperHDR
 - **Luzes do PC via OpenRGB:** RAM, placa-mãe e ventoinhas RGB seguem a mesma imagem, sincronizadas com a TV
 - Opção "Iniciar com o sistema"
 - Quatro perfis de qualidade, de 160x90 a 640x360 e de 25 a 60 fps

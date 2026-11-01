@@ -38,6 +38,8 @@ const setQuality = callable<[width: number, height: number, fps: number], boolea
 const setEnabled = callable<[enabled: boolean], boolean>("set_enabled");
 const setComponent = callable<[component: string, enabled: boolean], boolean>("set_component");
 const setAutostart = callable<[enabled: boolean], boolean>("set_autostart");
+const getForwarder = callable<[], { available: boolean; enable: boolean; flat: string[] }>("get_forwarder");
+const setForwarder = callable<[target: string], { ok: boolean; error?: string; warning?: string }>("set_forwarder");
 const installPortable = callable<[], { ok: boolean; version?: string; error?: string }>("install_portable");
 
 const STATE_LABEL: Record<string, string> = {
@@ -96,6 +98,8 @@ function Content() {
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [target, setTarget] = useState("");
+  const [forwarder, setForwarderState] = useState<string | null>(null);
+  const [fwdTarget, setFwdTarget] = useState("");
   // O toggle do forwarder só interessa a quem usa o forwarder
   const sawForwarder = useRef(false);
 
@@ -109,6 +113,10 @@ function Content() {
     const s = await getSettings();
     setSettings(s);
     setTarget(s.FLATBUFFERS_TARGET);
+    const f = await getForwarder();
+    const current = f.available ? (f.enable ? f.flat[0] ?? "" : "") : null;
+    setForwarderState(current);
+    setFwdTarget(current ?? "");
   };
 
   useEffect(() => {
@@ -155,6 +163,18 @@ function Content() {
       const [size, fps] = value.split("@");
       const [w, h] = size.split("x").map(Number);
       await setQuality(w, h, Number(fps));
+      await loadSettings();
+    });
+
+  const onForwarder = () =>
+    withBusy(async () => {
+      const res = await setForwarder(fwdTarget);
+      toaster.toast({
+        title: "HyperHDR",
+        body: res.ok
+          ? (res.warning ?? (fwdTarget.trim() ? `Encaminhando para ${fwdTarget.trim()}` : "Encaminhamento desligado"))
+          : `Falha: ${res.error}`,
+      });
       await loadSettings();
     });
 
@@ -316,6 +336,26 @@ function Content() {
                 onBlur={() => target !== settings.FLATBUFFERS_TARGET && onSetting("FLATBUFFERS_TARGET", target)}
               />
             </PanelSectionRow>
+          )}
+          {!external && forwarder !== null && (
+            <>
+              <PanelSectionRow>
+                <TextField
+                  label="Encaminhar para outro HyperHDR (host:porta)"
+                  description="Ex.: o HyperHDR da TV, porta Flatbuffers 19400. Vazio desliga."
+                  value={fwdTarget}
+                  disabled={busy}
+                  onChange={(e) => setFwdTarget(e.target.value)}
+                />
+              </PanelSectionRow>
+              {fwdTarget.trim() !== forwarder && (
+                <PanelSectionRow>
+                  <ButtonItem layout="below" disabled={busy} onClick={onForwarder}>
+                    {busy ? "Aplicando… (reinicia o HyperHDR)" : "Aplicar encaminhamento"}
+                  </ButtonItem>
+                </PanelSectionRow>
+              )}
+            </>
           )}
           <PanelSectionRow>
             <ToggleField
