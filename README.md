@@ -276,6 +276,7 @@ O plugin guarda tudo em `~/.config/hyperhdr-decky.env`. Você pode editar o arqu
 | `V4L2_DEVICE` | `/dev/video50` | Dispositivo do modo v4l2 |
 | `BRIDGE_WIDTH` / `BRIDGE_HEIGHT` / `BRIDGE_FPS` | `320` / `180` / `30` | Tamanho e taxa da captura |
 | `BRIDGE_THROTTLE` | `1` | `0` desliga o freio |
+| `BRIDGE_QUIET_PIPEWIRE_LOG` | `1` | `0` deixa o gamescope registrar o aviso `out of buffers` do freio |
 | `BRIDGE_IMPL` | `auto` | `gst-launch` força a ponte antiga, sem freio e sem desligamento suave |
 | `OPENRGB_ENABLE` | `0` | `1` liga as luzes do PC |
 | `OPENRGB_HOST` / `OPENRGB_PORT` | `127.0.0.1` / `6742` | Servidor SDK do OpenRGB |
@@ -371,7 +372,7 @@ O HyperHDR em si usa ~1–2% de um núcleo e não teve custo mensurável no FPS.
 
 **O freio.** A ponte segura cada quadro até completar 1/FPS (33 ms a 30 fps) antes de devolvê-lo. Sem buffer livre, o gamescope pula a cópia: em vez de ~100 por segundo, ele faz ~30.
 
-O efeito colateral é que o gamescope grava `pipewire: warning: out of buffers` no journal a cada vblank em que pulou a cópia. Medido:
+O efeito colateral é que o gamescope gera o aviso `pipewire: warning: out of buffers` a cada vblank em que pulou a cópia. Sem tratamento, isso vai para o journal. Medido:
 
 | Situação | Linhas por segundo | Volume no disco |
 | --- | --- | --- |
@@ -382,7 +383,7 @@ O efeito colateral é que o gamescope grava `pipewire: warning: out of buffers` 
 - **SSD e CPU:** desgaste e uso desprezíveis.
 - **Histórico de logs:** este é o efeito real. O Bazzite limita o journal a 50 MB (`SystemMaxUse=50M`), então ~20 min de jogo substituem todo o histórico anterior.
 
-Se você precisa de logs antigos, aumente o teto (exemplo: `SystemMaxUse=500M` em `/etc/systemd/journald.conf.d/`) ou desligue o **Freio da captura**. Não dá para filtrar a mensagem sem root, porque `LogFilterPatterns=` não vale para serviços de usuário.
+Por isso, com o freio ligado, a ponte silencia o canal de log `pipewire` do gamescope enquanto está conectada (`gamescopectl log_pipewire silent`) e o devolve ao nível `info` quando desconecta. Os outros canais de log do gamescope continuam iguais. Filtrar a mensagem no journald não funciona, porque `LogFilterPatterns=` não vale para serviços de usuário. Para ver o aviso de novo, use `BRIDGE_QUIET_PIPEWIRE_LOG=0`.
 
 ## Problemas conhecidos
 
@@ -533,7 +534,7 @@ Optional: `curl` (portable HyperHDR), `distrobox`, OpenRGB (`flatpak install fla
 | Throttle on | 104.2 (−1.6%) | ~3.2% of a core |
 | Throttle off | 100.2 (−5.3%) | ~9.4% |
 
-The FPS cost comes from gamescope rendering a full-resolution copy for every PipeWire consumer. The throttle holds buffers so gamescope skips most copies. The side effect is that gamescope logs `out of buffers` ~90×/s while you play (~140 MB/h of journal). That doesn't harm the system, but it shortens journal history on systems with a small `SystemMaxUse`.
+The FPS cost comes from gamescope rendering a full-resolution copy for every PipeWire consumer. The throttle holds buffers so gamescope skips most copies. The side effect is that gamescope emits an `out of buffers` warning ~90×/s while you play (~140 MB/h of journal), which pushes older history out on systems with a small `SystemMaxUse`. With the throttle on, the bridge therefore sets gamescope's `pipewire` log channel to `silent` while connected and restores it to `info` on disconnect (`BRIDGE_QUIET_PIPEWIRE_LOG=0` keeps the warning).
 
 **Known issues**
 

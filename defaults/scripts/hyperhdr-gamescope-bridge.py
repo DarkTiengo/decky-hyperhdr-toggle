@@ -10,6 +10,7 @@ Lê a mesma configuração do script bash (variáveis de ambiente).
 """
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +36,20 @@ FPS = int(os.environ.get("BRIDGE_FPS", "30"))
 # gamescope fica sem buffer livre e pula a cópia da tela (menos CPU aqui e menos
 # trabalho de GPU lá). Efeito colateral: o gamescope loga "out of buffers" a cada vblank.
 THROTTLE = os.environ.get("BRIDGE_THROTTLE", "1") != "0"
+# O gamescope emite esse aviso com prioridade de erro no canal "pipewire", ~90 linhas/s
+# a 120 Hz: dezenas de milhares de linhas por sessão, que empurram o resto do journal para
+# fora. Com o freio ligado, o canal fica em silêncio enquanto a ponte está conectada e volta
+# ao nível padrão (info) na saída. Os outros canais de log do gamescope não mudam.
+QUIET_PIPEWIRE_LOG = THROTTLE and os.environ.get("BRIDGE_QUIET_PIPEWIRE_LOG", "1") != "0"
+
+
+def gamescope_log_pipewire(level: str) -> None:
+    """Muda o nível do canal de log "pipewire" do gamescope (convar log_pipewire)."""
+    try:
+        subprocess.run(["gamescopectl", "log_pipewire", level], timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # sem gamescopectl ou gamescope sem resposta: só fica o log como antes
 
 
 def build_pipeline() -> str:
@@ -149,9 +164,16 @@ def main() -> int:
         signal_add(GLib.PRIORITY_HIGH, sig, on_signal)
 
     pipeline.set_state(Gst.State.PLAYING)
-    print(f"gamescope conectado, modo {MODE} {WIDTH}x{HEIGHT}@{FPS} (desligamento suave{', freio' if THROTTLE else ''})", flush=True)
-    loop.run()
-    pipeline.set_state(Gst.State.NULL)
+    if QUIET_PIPEWIRE_LOG:
+        gamescope_log_pipewire("silent")
+    print(f"gamescope conectado, modo {MODE} {WIDTH}x{HEIGHT}@{FPS} (desligamento suave{', freio' if THROTTLE else ''}"
+          f"{', log do pipewire silenciado' if QUIET_PIPEWIRE_LOG else ''})", flush=True)
+    try:
+        loop.run()
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+        if QUIET_PIPEWIRE_LOG:
+            gamescope_log_pipewire("info")
     return exit_code
 
 
